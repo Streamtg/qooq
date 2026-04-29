@@ -409,12 +409,12 @@ func ResolveChannelPeer(ctx *ext.Context, identifier string) (tg.InputPeerClass,
 		return nil, fmt.Errorf("empty or zero log channel identifier")
 	}
 
-	// ── Numeric path: only if the entire string is a valid integer ─
+	// Only treat as numeric if the ENTIRE string parses as an integer
 	if id, err := strconv.ParseInt(identifier, 10, 64); err == nil {
 		return resolveChannelByID(ctx, id)
 	}
 
-	// ── Username path ──────────────────────────────────────────────
+	// Username path
 	username := strings.TrimPrefix(identifier, "@")
 	return resolveChannelByUsername(ctx, username)
 }
@@ -437,11 +437,11 @@ func resolveChannelByID(ctx *ext.Context, id int64) (tg.InputPeerClass, error) {
 		}
 
 	case id > 0:
-		// Bare positive ID: 1234567890
+		// Bare positive ID
 		bareID = id
 
 	default:
-		// Negative but NOT -100 prefix → regular group or invalid
+		// Negative but NOT -100 prefix → regular group
 		peer := ctx.PeerStorage.GetInputPeerById(id)
 		if !peer.Zero() {
 			return peer, nil
@@ -449,11 +449,11 @@ func resolveChannelByID(ctx *ext.Context, id int64) (tg.InputPeerClass, error) {
 		return nil, fmt.Errorf("cannot resolve peer with ID %d: not found in peer storage", id)
 	}
 
-	// Build the full negative ID for peer storage lookup
+	// Build full negative ID for peer storage lookup
 	fullNegIDStr := "-100" + strconv.FormatInt(bareID, 10)
 	fullNegID, _ := strconv.ParseInt(fullNegIDStr, 10, 64)
 
-	// ── Try peer storage first (fast path, has access hash cached) ─
+	// Try peer storage first (has access hash cached)
 	peerInfo := ctx.PeerStorage.GetPeerById(fullNegID)
 	if peerInfo.Type == int(storage.TypeChannel) {
 		resolved, err := ctx.Raw.ChannelsGetChannels(ctx, []tg.InputChannelClass{
@@ -465,7 +465,7 @@ func resolveChannelByID(ctx *ext.Context, id int64) (tg.InputPeerClass, error) {
 		return extractChannelPeer(resolved, bareID)
 	}
 
-	// ── Fallback: try with zero access hash (works if bot is member) ─
+	// Fallback: try with zero access hash (works if bot is member)
 	resolved, err := ctx.Raw.ChannelsGetChannels(ctx, []tg.InputChannelClass{
 		&tg.InputChannel{ChannelID: bareID, AccessHash: 0},
 	})
@@ -498,13 +498,16 @@ func resolveChannelByUsername(ctx *ext.Context, username string) (tg.InputPeerCl
 }
 
 // extractChannelPeer finds the matching channel in a ChannelsGetChannels response.
-func extractChannelPeer(resolved tg.ChatsChatsClass, bareID int64) (tg.InputPeerClass, error) {
+// Uses the concrete types *tg.MessagesChats and *tg.MessagesChatsSlice
+// instead of the interface tg.ChatsChatsClass (which may not exist in this version).
+func extractChannelPeer(resolved tg.ChannelsChannelsClass, bareID int64) (tg.InputPeerClass, error) {
 	var chats []tg.ChatClass
+
 	switch r := resolved.(type) {
-	case *tg.MessagesChats:
+	case *tg.ChannelsChannels:
 		chats = r.GetChats()
-	case *tg.MessagesChatsSlice:
-		chats = r.GetChats()
+	case *tg.ChannelsChannelsNotModified:
+		return nil, fmt.Errorf("channels not modified response for channel ID %d", bareID)
 	default:
 		return nil, fmt.Errorf("unexpected type from ChannelsGetChannels: %T", resolved)
 	}
