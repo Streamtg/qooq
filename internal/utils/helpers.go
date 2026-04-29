@@ -16,7 +16,6 @@ import (
 )
 
 // Contains checks if a slice contains a specific element.
-// Source: https://stackoverflow.com/a/70802740/15807350
 func Contains[T comparable](s []T, e T) bool {
 	for _, v := range s {
 		if v == e {
@@ -28,7 +27,6 @@ func Contains[T comparable](s []T, e T) bool {
 
 // GetMessage fetches a message by its ID using the Telegram client.
 func GetMessage(ctx context.Context, client *gotgproto.Client, messageID int) (*tg.Message, error) {
-	// Fetch messages using the client API
 	messages, err := client.API().MessagesGetMessages(ctx, []tg.InputMessageClass{
 		&tg.InputMessageID{ID: messageID},
 	})
@@ -36,9 +34,7 @@ func GetMessage(ctx context.Context, client *gotgproto.Client, messageID int) (*
 		return nil, err
 	}
 
-	// Attempt to cast the response to the expected type
 	if msgs, ok := messages.(*tg.MessagesMessages); ok {
-		// Iterate over the messages to find the one with the matching ID
 		for _, msg := range msgs.Messages {
 			if m, ok := msg.(*tg.Message); ok && m.GetID() == messageID {
 				return m, nil
@@ -49,21 +45,17 @@ func GetMessage(ctx context.Context, client *gotgproto.Client, messageID int) (*
 	return nil, fmt.Errorf("message not found")
 }
 
-// ExtractURLFromEntities extracts the first URL from message entities (for WebPageEmpty fallback)
+// ExtractURLFromEntities extracts the first URL from message entities.
 func ExtractURLFromEntities(msg *tg.Message) string {
 	if msg == nil || len(msg.Entities) == 0 {
 		return ""
 	}
 
-	// Look for MessageEntityTextURL or MessageEntityURL
 	for _, entity := range msg.Entities {
 		switch e := entity.(type) {
 		case *tg.MessageEntityTextURL:
-			// This is a text with embedded URL (most common in forwarded messages)
 			return e.URL
 		case *tg.MessageEntityURL:
-			// This is a plain URL in the text
-			// Extract the URL text from the message
 			offset := e.Offset
 			length := e.Length
 			if offset >= 0 && offset+length <= len([]rune(msg.Message)) {
@@ -76,65 +68,38 @@ func ExtractURLFromEntities(msg *tg.Message) string {
 	return ""
 }
 
-// DetectMimeTypeFromURL attempts to detect MIME type from URL or returns default audio/mpeg
+// DetectMimeTypeFromURL attempts to detect MIME type from URL.
 func DetectMimeTypeFromURL(url string) string {
-	// Extract file extension from URL
 	urlLower := strings.ToLower(url)
 
-	// Common audio formats
-	if strings.Contains(urlLower, ".mp3") || strings.HasSuffix(urlLower, ".mp3") {
-		return "audio/mpeg"
-	}
-	if strings.Contains(urlLower, ".m4a") || strings.HasSuffix(urlLower, ".m4a") {
-		return "audio/mp4"
-	}
-	if strings.Contains(urlLower, ".ogg") || strings.HasSuffix(urlLower, ".ogg") {
-		return "audio/ogg"
-	}
-	if strings.Contains(urlLower, ".wav") || strings.HasSuffix(urlLower, ".wav") {
-		return "audio/wav"
-	}
-	if strings.Contains(urlLower, ".flac") || strings.HasSuffix(urlLower, ".flac") {
-		return "audio/flac"
-	}
-	if strings.Contains(urlLower, ".aac") || strings.HasSuffix(urlLower, ".aac") {
-		return "audio/aac"
-	}
-
-	// Common video formats
-	if strings.Contains(urlLower, ".mp4") || strings.HasSuffix(urlLower, ".mp4") {
-		return "video/mp4"
-	}
-	if strings.Contains(urlLower, ".webm") || strings.HasSuffix(urlLower, ".webm") {
-		return "video/webm"
-	}
-	if strings.Contains(urlLower, ".mkv") || strings.HasSuffix(urlLower, ".mkv") {
-		return "video/x-matroska"
-	}
-	if strings.Contains(urlLower, ".avi") || strings.HasSuffix(urlLower, ".avi") {
-		return "video/x-msvideo"
-	}
-	if strings.Contains(urlLower, ".mov") || strings.HasSuffix(urlLower, ".mov") {
-		return "video/quicktime"
+	checks := []struct {
+		ext  string
+		mime string
+	}{
+		{".mp3", "audio/mpeg"},
+		{".m4a", "audio/mp4"},
+		{".ogg", "audio/ogg"},
+		{".wav", "audio/wav"},
+		{".flac", "audio/flac"},
+		{".aac", "audio/aac"},
+		{".mp4", "video/mp4"},
+		{".webm", "video/webm"},
+		{".mkv", "video/x-matroska"},
+		{".avi", "video/x-msvideo"},
+		{".mov", "video/quicktime"},
+		{".jpg", "image/jpeg"},
+		{".jpeg", "image/jpeg"},
+		{".png", "image/png"},
+		{".gif", "image/gif"},
+		{".webp", "image/webp"},
 	}
 
-	// Common image formats
-	if strings.Contains(urlLower, ".jpg") || strings.Contains(urlLower, ".jpeg") ||
-		strings.HasSuffix(urlLower, ".jpg") || strings.HasSuffix(urlLower, ".jpeg") {
-		return "image/jpeg"
-	}
-	if strings.Contains(urlLower, ".png") || strings.HasSuffix(urlLower, ".png") {
-		return "image/png"
-	}
-	if strings.Contains(urlLower, ".gif") || strings.HasSuffix(urlLower, ".gif") {
-		return "image/gif"
-	}
-	if strings.Contains(urlLower, ".webp") || strings.HasSuffix(urlLower, ".webp") {
-		return "image/webp"
+	for _, c := range checks {
+		if strings.Contains(urlLower, c.ext) {
+			return c.mime
+		}
 	}
 
-	// For hosting services known to serve audio (like attach.fahares.com), default to audio/mpeg
-	// This is a reasonable assumption for URLs without file extensions
 	return "audio/mpeg"
 }
 
@@ -142,7 +107,6 @@ func DetectMimeTypeFromURL(url string) string {
 func FileFromMedia(media tg.MessageMediaClass) (*types.DocumentFile, error) {
 	switch media := media.(type) {
 	case *tg.MessageMediaDocument:
-		// Debug: Processing document media
 		document, ok := media.Document.AsNotEmpty()
 		if !ok {
 			return nil, fmt.Errorf("document is empty or not a valid type")
@@ -154,7 +118,6 @@ func FileFromMedia(media tg.MessageMediaClass) (*types.DocumentFile, error) {
 		var audioDuration int
 		var isVoice, isAnimation bool
 
-		// Extract metadata from document attributes
 		for _, attribute := range document.Attributes {
 			switch attr := attribute.(type) {
 			case *tg.DocumentAttributeFilename:
@@ -167,13 +130,12 @@ func FileFromMedia(media tg.MessageMediaClass) (*types.DocumentFile, error) {
 				audioDuration = int(attr.Duration)
 				audioTitle = attr.Title
 				audioPerformer = attr.Performer
-				isVoice = attr.Voice // Voice messages have this flag set to true
+				isVoice = attr.Voice
 			case *tg.DocumentAttributeAnimated:
 				isAnimation = true
 			}
 		}
 
-		// Determine the final duration (prefer video duration, then audio duration)
 		finalDuration := videoDuration
 		if finalDuration == 0 {
 			finalDuration = audioDuration
@@ -193,17 +155,17 @@ func FileFromMedia(media tg.MessageMediaClass) (*types.DocumentFile, error) {
 			IsVoice:     isVoice,
 			IsAnimation: isAnimation,
 		}, nil
+
 	case *tg.MessageMediaPhoto:
 		photo, ok := media.Photo.AsNotEmpty()
 		if !ok {
 			return nil, fmt.Errorf("photo is empty or not a valid type")
 		}
-		var (
-			largestSize     *tg.PhotoSize
-			largestWidth    int
-			largestHeight   int
-			largestFileSize int64
-		)
+
+		var largestSize *tg.PhotoSize
+		var largestWidth, largestHeight int
+		var largestFileSize int64
+
 		for _, size := range photo.GetSizes() {
 			if s, ok := size.(*tg.PhotoSize); ok {
 				if s.W > largestWidth {
@@ -214,21 +176,21 @@ func FileFromMedia(media tg.MessageMediaClass) (*types.DocumentFile, error) {
 				}
 			}
 		}
+
 		if largestSize == nil {
 			return nil, fmt.Errorf("no suitable full-size photo found for streaming")
 		}
+
 		photoFileLocation := &tg.InputPhotoFileLocation{
 			ID:            photo.ID,
 			AccessHash:    photo.AccessHash,
 			FileReference: photo.FileReference,
 			ThumbSize:     largestSize.GetType(),
 		}
+
 		fileName := fmt.Sprintf("photo_%d.jpg", photo.ID)
 		mimeType := "image/jpeg"
-		// Determine mime type based on photo size type
 		switch largestSize.GetType() {
-		case "j":
-			mimeType = "image/jpeg"
 		case "p":
 			mimeType = "image/png"
 		case "w":
@@ -236,6 +198,7 @@ func FileFromMedia(media tg.MessageMediaClass) (*types.DocumentFile, error) {
 		case "g":
 			mimeType = "image/gif"
 		}
+
 		return &types.DocumentFile{
 			ID:       photo.ID,
 			Location: photoFileLocation,
@@ -244,37 +207,23 @@ func FileFromMedia(media tg.MessageMediaClass) (*types.DocumentFile, error) {
 			MimeType: mimeType,
 			Width:    largestWidth,
 			Height:   largestHeight,
-			Duration: 0,
 		}, nil
+
 	case *tg.MessageMediaWebPage:
-		// Extract media from webpage if available
-		// The Webpage field is of type WebPageClass, need to check its actual type
 		webpage, ok := media.Webpage.(*tg.WebPage)
 		if !ok {
-			// Handle other WebPageClass types
 			switch wp := media.Webpage.(type) {
 			case *tg.WebPageEmpty:
-				// Debug: Log the empty webpage details
-				fmt.Printf("WebPageEmpty detected - ID: %d\n", wp.ID)
 				return nil, fmt.Errorf("webpage is empty (WebPageEmpty) - ID: %d", wp.ID)
 			case *tg.WebPagePending:
-				fmt.Printf("WebPagePending detected - ID: %d, Date: %d\n", wp.ID, wp.Date)
 				return nil, fmt.Errorf("webpage is pending (WebPagePending)")
 			case *tg.WebPageNotModified:
 				return nil, fmt.Errorf("webpage is not modified (WebPageNotModified)")
 			default:
-				fmt.Printf("Unexpected webpage type: %T, Value: %+v\n", wp, wp)
 				return nil, fmt.Errorf("unexpected webpage type: %T", wp)
 			}
 		}
 
-		// Debug: Log webpage details
-		fmt.Printf("WebPage found - ID: %d, URL: %s, Type: %s, Title: %s\n",
-			webpage.ID, webpage.URL, webpage.Type, webpage.Title)
-		fmt.Printf("WebPage - HasDocument: %v, HasPhoto: %v\n",
-			webpage.Document != nil, webpage.Photo != nil)
-
-		// Check if webpage contains embedded document (video, audio, file)
 		if webpage.Document != nil {
 			if doc, ok := webpage.Document.(*tg.Document); ok {
 				var fileName string
@@ -283,7 +232,6 @@ func FileFromMedia(media tg.MessageMediaClass) (*types.DocumentFile, error) {
 				var audioDuration int
 				var isVoice, isAnimation bool
 
-				// Extract metadata from document attributes
 				for _, attribute := range doc.Attributes {
 					switch attr := attribute.(type) {
 					case *tg.DocumentAttributeFilename:
@@ -302,12 +250,10 @@ func FileFromMedia(media tg.MessageMediaClass) (*types.DocumentFile, error) {
 					}
 				}
 
-				// Use webpage title as filename if not available
 				if fileName == "" && webpage.Title != "" {
 					fileName = webpage.Title
 				}
 
-				// Determine the final duration
 				finalDuration := videoDuration
 				if finalDuration == 0 {
 					finalDuration = audioDuration
@@ -330,15 +276,12 @@ func FileFromMedia(media tg.MessageMediaClass) (*types.DocumentFile, error) {
 			}
 		}
 
-		// Check if webpage contains embedded photo
 		if webpage.Photo != nil {
 			if photo, ok := webpage.Photo.(*tg.Photo); ok {
-				var (
-					largestSize     *tg.PhotoSize
-					largestWidth    int
-					largestHeight   int
-					largestFileSize int64
-				)
+				var largestSize *tg.PhotoSize
+				var largestWidth, largestHeight int
+				var largestFileSize int64
+
 				for _, size := range photo.GetSizes() {
 					if s, ok := size.(*tg.PhotoSize); ok {
 						if s.W > largestWidth {
@@ -349,6 +292,7 @@ func FileFromMedia(media tg.MessageMediaClass) (*types.DocumentFile, error) {
 						}
 					}
 				}
+
 				if largestSize == nil {
 					return nil, fmt.Errorf("no suitable full-size photo found in webpage")
 				}
@@ -367,8 +311,6 @@ func FileFromMedia(media tg.MessageMediaClass) (*types.DocumentFile, error) {
 
 				mimeType := "image/jpeg"
 				switch largestSize.GetType() {
-				case "j":
-					mimeType = "image/jpeg"
 				case "p":
 					mimeType = "image/png"
 				case "w":
@@ -385,13 +327,12 @@ func FileFromMedia(media tg.MessageMediaClass) (*types.DocumentFile, error) {
 					MimeType: mimeType,
 					Width:    largestWidth,
 					Height:   largestHeight,
-					Duration: 0,
 				}, nil
 			}
 		}
 
-		// If no media found in webpage, return error
-		return nil, fmt.Errorf("webpage does not contain any extractable media (document or photo)")
+		return nil, fmt.Errorf("webpage does not contain any extractable media")
+
 	default:
 		return nil, fmt.Errorf("unsupported media type: %T", media)
 	}
@@ -401,36 +342,36 @@ func FileFromMedia(media tg.MessageMediaClass) (*types.DocumentFile, error) {
 func FileFromMessage(ctx context.Context, client *gotgproto.Client, messageID int) (*types.DocumentFile, error) {
 	key := fmt.Sprintf("file:%d:%d", messageID, client.Self.ID)
 	var cachedMedia types.DocumentFile
-	err := cache.GetCache().Get(key, &cachedMedia)
-	if err == nil {
+	if err := cache.GetCache().Get(key, &cachedMedia); err == nil {
 		return &cachedMedia, nil
 	}
+
 	message, err := GetMessage(ctx, client, messageID)
 	if err != nil {
 		return nil, err
 	}
+
 	file, err := FileFromMedia(message.Media)
 	if err != nil {
 		return nil, err
 	}
-	err = cache.GetCache().Set(key, file, 3600)
-	if err != nil {
-		return nil, err
-	}
+
+	_ = cache.GetCache().Set(key, file, 3600)
 	return file, nil
 }
 
 // ForwardMessages forwards a message from one chat to another.
 func ForwardMessages(ctx *ext.Context, fromChatId int64, logChannelIdentifier string, messageID int) (*tg.Updates, error) {
-	// Use ctx.PeerStorage.GetInputPeerById to retrieve the peer (corrected from storage.GetInputPeerById if it existed)
 	fromPeer := ctx.PeerStorage.GetInputPeerById(fromChatId)
 	if fromPeer.Zero() {
 		return nil, fmt.Errorf("fromChatId: %d is not a valid peer", fromChatId)
 	}
+
 	toPeer, err := GetLogChannelPeer(ctx, logChannelIdentifier)
 	if err != nil {
 		return nil, err
 	}
+
 	update, err := ctx.Raw.MessagesForwardMessages(ctx, &tg.MessagesForwardMessagesRequest{
 		RandomID: []int64{rand.Int63()},
 		FromPeer: fromPeer,
@@ -440,83 +381,8 @@ func ForwardMessages(ctx *ext.Context, fromChatId int64, logChannelIdentifier st
 	if err != nil {
 		return nil, err
 	}
+
 	return update.(*tg.Updates), nil
-}
-
-// ResolveChannelPeer resolves a peer identifier (ID or username) to a channel peer.
-func ResolveChannelPeer(ctx *ext.Context, identifier string) (tg.InputPeerClass, error) {
-	// Try parsing as a numeric ID first.
-	if id, err := strconv.ParseInt(identifier, 10, 64); err == nil {
-		// If the ID is positive and looks like a channel ID (large number),
-		// automatically add the -100 prefix
-		if id > 0 && id > 1000000000 {
-			// This is likely a bare channel ID, convert it to the full format
-			id = -1000000000000 - id // Convert to negative with -100 prefix
-			identifier = strconv.FormatInt(id, 10)
-		}
-
-		// If it's a channel ID, resolve it via API to get the access hash and verify it.
-		peerInfo := ctx.PeerStorage.GetPeerById(id)
-		if peerInfo.Type == int(storage.TypeChannel) {
-			// The peerInfo.ID is the negative ID, e.g., -100123456.
-			// The actual channel ID for API calls is the positive part, e.g., 123456.
-			// And `tg.Channel.GetID()` also returns the positive ID.
-			strID := strconv.FormatInt(peerInfo.ID, 10)
-			if !strings.HasPrefix(strID, "-100") {
-				return nil, fmt.Errorf("peer %d is a channel but ID does not have '-100' prefix", peerInfo.ID)
-			}
-			bareIDStr := strings.TrimPrefix(strID, "-100")
-			bareChannelID, err := strconv.ParseInt(bareIDStr, 10, 64)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse bare channel ID from %s: %w", strID, err)
-			}
-
-			// Use the bare (positive) ID and the stored access hash for the API call.
-			resolved, err := ctx.Raw.ChannelsGetChannels(ctx, []tg.InputChannelClass{
-				&tg.InputChannel{ChannelID: bareChannelID, AccessHash: peerInfo.AccessHash},
-			})
-			if err != nil {
-				return nil, fmt.Errorf("failed to resolve channel ID %d (bare: %d): %w", id, bareChannelID, err)
-			}
-
-			var chats []tg.ChatClass
-			switch r := resolved.(type) {
-			case *tg.MessagesChats:
-				chats = r.GetChats()
-			case *tg.MessagesChatsSlice:
-				chats = r.GetChats()
-			default:
-				return nil, fmt.Errorf("unexpected type from ChannelsGetChannels: %T", resolved)
-			}
-
-			for _, chat := range chats {
-				if ch, ok := chat.(*tg.Channel); ok && ch.GetID() == bareChannelID {
-					return ch.AsInputPeer(), nil
-				}
-			}
-			return nil, fmt.Errorf("channel ID %d resolved but could not find matching chat entity", id)
-		}
-
-		// For non-channel peers, use ctx.PeerStorage.GetInputPeerById (corrected from storage.GetInputPeerById if it existed)
-		peer := ctx.PeerStorage.GetInputPeerById(id)
-		if !peer.Zero() {
-			return peer, nil
-		}
-	}
-
-	// If not a numeric ID, treat it as a username.
-	username := strings.TrimPrefix(identifier, "@")
-	resolved, err := ctx.Raw.ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{Username: username})
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve username '%s': %w", username, err)
-	}
-	// Look for a channel in the resolved chats.
-	for _, chat := range resolved.Chats {
-		if channel, ok := chat.(*tg.Channel); ok {
-			return channel.AsInputPeer(), nil
-		}
-	}
-	return nil, fmt.Errorf("no channel found for identifier '%s'", identifier)
 }
 
 // GetLogChannelPeer resolves the log channel peer using the identifier.
@@ -528,43 +394,165 @@ func GetLogChannelPeer(ctx *ext.Context, logChannelIdentifier string) (tg.InputP
 	return peer, nil
 }
 
-// ExtractFloodWait checks if an error is a FLOOD_WAIT error and extracts the wait time in seconds.
-// Returns (waitSeconds, true) if it's a FLOOD_WAIT error, or (0, false) otherwise.
+// ResolveChannelPeer resolves a peer identifier (numeric ID or @username) to a channel peer.
+//
+// Accepted formats:
+//
+//	-1001234567890   full negative channel ID  (preferred)
+//	1234567890       bare positive channel ID  (auto-converted)
+//	@channelname     public username
+//	channelname      public username without @
+func ResolveChannelPeer(ctx *ext.Context, identifier string) (tg.InputPeerClass, error) {
+	identifier = strings.TrimSpace(identifier)
+
+	if identifier == "" || identifier == "0" {
+		return nil, fmt.Errorf("empty or zero log channel identifier")
+	}
+
+	// ── Numeric path: only if the entire string is a valid integer ─
+	if id, err := strconv.ParseInt(identifier, 10, 64); err == nil {
+		return resolveChannelByID(ctx, id)
+	}
+
+	// ── Username path ──────────────────────────────────────────────
+	username := strings.TrimPrefix(identifier, "@")
+	return resolveChannelByUsername(ctx, username)
+}
+
+// resolveChannelByID resolves a channel from a numeric Telegram ID.
+// Handles full negative IDs (-1001234567890) and bare positive IDs (1234567890).
+func resolveChannelByID(ctx *ext.Context, id int64) (tg.InputPeerClass, error) {
+	idStr := strconv.FormatInt(id, 10)
+
+	var bareID int64
+
+	switch {
+	case strings.HasPrefix(idStr, "-100"):
+		// Full form: -1001234567890 → bare = 1234567890
+		bareStr := strings.TrimPrefix(idStr, "-100")
+		var err error
+		bareID, err = strconv.ParseInt(bareStr, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse bare channel ID from '%s': %w", idStr, err)
+		}
+
+	case id > 0:
+		// Bare positive ID: 1234567890
+		bareID = id
+
+	default:
+		// Negative but NOT -100 prefix → regular group or invalid
+		peer := ctx.PeerStorage.GetInputPeerById(id)
+		if !peer.Zero() {
+			return peer, nil
+		}
+		return nil, fmt.Errorf("cannot resolve peer with ID %d: not found in peer storage", id)
+	}
+
+	// Build the full negative ID for peer storage lookup
+	fullNegIDStr := "-100" + strconv.FormatInt(bareID, 10)
+	fullNegID, _ := strconv.ParseInt(fullNegIDStr, 10, 64)
+
+	// ── Try peer storage first (fast path, has access hash cached) ─
+	peerInfo := ctx.PeerStorage.GetPeerById(fullNegID)
+	if peerInfo.Type == int(storage.TypeChannel) {
+		resolved, err := ctx.Raw.ChannelsGetChannels(ctx, []tg.InputChannelClass{
+			&tg.InputChannel{ChannelID: bareID, AccessHash: peerInfo.AccessHash},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("ChannelsGetChannels failed for channel %d: %w", bareID, err)
+		}
+		return extractChannelPeer(resolved, bareID)
+	}
+
+	// ── Fallback: try with zero access hash (works if bot is member) ─
+	resolved, err := ctx.Raw.ChannelsGetChannels(ctx, []tg.InputChannelClass{
+		&tg.InputChannel{ChannelID: bareID, AccessHash: 0},
+	})
+	if err != nil {
+		return nil, fmt.Errorf(
+			"could not resolve channel %d: ensure the bot is a member of that channel: %w",
+			bareID, err,
+		)
+	}
+
+	return extractChannelPeer(resolved, bareID)
+}
+
+// resolveChannelByUsername resolves a channel from a public @username.
+func resolveChannelByUsername(ctx *ext.Context, username string) (tg.InputPeerClass, error) {
+	resolved, err := ctx.Raw.ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{
+		Username: username,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve username '@%s': %w", username, err)
+	}
+
+	for _, chat := range resolved.Chats {
+		if channel, ok := chat.(*tg.Channel); ok {
+			return channel.AsInputPeer(), nil
+		}
+	}
+
+	return nil, fmt.Errorf("no channel found for username '@%s'", username)
+}
+
+// extractChannelPeer finds the matching channel in a ChannelsGetChannels response.
+func extractChannelPeer(resolved tg.ChatsChatsClass, bareID int64) (tg.InputPeerClass, error) {
+	var chats []tg.ChatClass
+	switch r := resolved.(type) {
+	case *tg.MessagesChats:
+		chats = r.GetChats()
+	case *tg.MessagesChatsSlice:
+		chats = r.GetChats()
+	default:
+		return nil, fmt.Errorf("unexpected type from ChannelsGetChannels: %T", resolved)
+	}
+
+	for _, chat := range chats {
+		if ch, ok := chat.(*tg.Channel); ok && ch.GetID() == bareID {
+			return ch.AsInputPeer(), nil
+		}
+	}
+
+	return nil, fmt.Errorf("channel ID %d not found in ChannelsGetChannels response", bareID)
+}
+
+// ExtractFloodWait checks if an error is a FLOOD_WAIT error and extracts the wait time.
 func ExtractFloodWait(err error) (int, bool) {
 	if err == nil {
 		return 0, false
 	}
 
 	errText := err.Error()
-	// Pattern: FLOOD_WAIT (3) or FLOOD_WAIT_3 or similar variations
-	if strings.Contains(errText, "FLOOD_WAIT") {
-		// Try to extract the number from patterns like "FLOOD_WAIT (3)"
-		start := strings.Index(errText, "FLOOD_WAIT")
-		if start >= 0 {
-			remaining := errText[start:]
-			// Look for number in parentheses: FLOOD_WAIT (123)
-			if strings.Contains(remaining, "(") && strings.Contains(remaining, ")") {
-				startParen := strings.Index(remaining, "(")
-				endParen := strings.Index(remaining, ")")
-				if endParen > startParen {
-					numStr := strings.TrimSpace(remaining[startParen+1 : endParen])
-					if waitTime, err := strconv.Atoi(numStr); err == nil {
-						return waitTime, true
-					}
-				}
-			}
-			// Look for underscore format: FLOOD_WAIT_123
-			if strings.Contains(remaining, "_") {
-				parts := strings.Split(remaining, "_")
-				for _, part := range parts {
-					if waitTime, err := strconv.Atoi(strings.TrimSpace(part)); err == nil {
-						return waitTime, true
-					}
-				}
-			}
-		}
-		// If we found FLOOD_WAIT but couldn't extract time, default to 5 seconds
+	if !strings.Contains(errText, "FLOOD_WAIT") {
+		return 0, false
+	}
+
+	start := strings.Index(errText, "FLOOD_WAIT")
+	if start < 0 {
 		return 5, true
 	}
-	return 0, false
+
+	remaining := errText[start:]
+
+	// Pattern: FLOOD_WAIT (123)
+	if i := strings.Index(remaining, "("); i >= 0 {
+		if j := strings.Index(remaining[i:], ")"); j >= 0 {
+			numStr := strings.TrimSpace(remaining[i+1 : i+j])
+			if waitTime, err := strconv.Atoi(numStr); err == nil {
+				return waitTime, true
+			}
+		}
+	}
+
+	// Pattern: FLOOD_WAIT_123
+	parts := strings.Split(remaining, "_")
+	for _, part := range parts {
+		if waitTime, err := strconv.Atoi(strings.TrimSpace(part)); err == nil {
+			return waitTime, true
+		}
+	}
+
+	return 5, true
 }
