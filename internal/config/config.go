@@ -24,6 +24,7 @@ type Configuration struct {
 	BaseURL        string
 	Port           string
 	HashLength     int
+	HashSecret     string // Secret for HMAC hash generation (Worker mode)
 	CacheDirectory string
 	MaxCacheSize   int64
 	DatabasePath   string
@@ -31,6 +32,10 @@ type Configuration struct {
 	LogLevel       string // Log level: DEBUG, INFO, WARNING, ERROR
 	BinaryCache    *reader.BinaryCache
 	LogChannelID   string
+
+	// Cloudflare Worker settings
+	WorkerBaseURL string // Base URL of the Cloudflare Worker (e.g., https://file.streamgramm.workers.dev)
+	PushSecret    string // Secret token for authenticating push requests to the Worker
 
 	// Connection and retry settings
 	RequestTimeout int // Timeout for Telegram API requests in seconds
@@ -116,11 +121,16 @@ func LoadConfig(log *logger.Logger) Configuration {
 	cfg.BaseURL = viper.GetString("base_url")
 	cfg.Port = viper.GetString("port")
 	cfg.HashLength = viper.GetInt("hash_length")
+	cfg.HashSecret = viper.GetString("hash_secret")
 	cfg.CacheDirectory = viper.GetString("cache_directory")
 	cfg.MaxCacheSize = viper.GetInt64("max_cache_size")
 	cfg.DebugMode = viper.GetBool("debug_mode")
 	cfg.LogLevel = viper.GetString("log_level")
 	cfg.LogChannelID = viper.GetString("log_channel_id")
+
+	// Cloudflare Worker settings
+	cfg.WorkerBaseURL = viper.GetString("worker_base_url")
+	cfg.PushSecret = viper.GetString("push_secret")
 
 	// Connection and retry settings
 	cfg.RequestTimeout = viper.GetInt("request_timeout")
@@ -185,12 +195,22 @@ func setDefaultValues(cfg *Configuration) {
 		}
 	}
 
+	// Worker mode: if WorkerBaseURL is not set, fall back to BaseURL behavior
+	if cfg.WorkerBaseURL == "" {
+		cfg.WorkerBaseURL = ""
+	}
+
+	// If HashSecret is not set, fall back to ApiHash as a default secret
+	if cfg.HashSecret == "" && cfg.ApiHash != "" {
+		cfg.HashSecret = cfg.ApiHash
+	}
+
 	// Connection and retry defaults
 	if cfg.RequestTimeout == 0 {
 		cfg.RequestTimeout = 300 // 5 minutes default timeout
 	}
 	if cfg.MaxRetries == 0 {
-		cfg.MaxRetries = 10 // 10 retry attempts by default (increased for better resilience)
+		cfg.MaxRetries = 10 // 10 retry attempts by default
 	}
 	if cfg.RetryBaseDelay == 0 {
 		cfg.RetryBaseDelay = 1 // 1 second base delay
