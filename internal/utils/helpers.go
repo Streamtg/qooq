@@ -409,7 +409,7 @@ func ResolveChannelPeer(ctx *ext.Context, identifier string) (tg.InputPeerClass,
 		return nil, fmt.Errorf("empty or zero log channel identifier")
 	}
 
-	// Only treat as numeric if the ENTIRE string parses as an integer
+	// Only treat as numeric if the ENTIRE string parses as a valid integer
 	if id, err := strconv.ParseInt(identifier, 10, 64); err == nil {
 		return resolveChannelByID(ctx, id)
 	}
@@ -437,7 +437,7 @@ func resolveChannelByID(ctx *ext.Context, id int64) (tg.InputPeerClass, error) {
 		}
 
 	case id > 0:
-		// Bare positive ID
+		// Bare positive ID: 1234567890
 		bareID = id
 
 	default:
@@ -465,7 +465,7 @@ func resolveChannelByID(ctx *ext.Context, id int64) (tg.InputPeerClass, error) {
 		return extractChannelPeer(resolved, bareID)
 	}
 
-	// Fallback: try with zero access hash (works if bot is member)
+	// Fallback: try with zero access hash (works if bot is already a member)
 	resolved, err := ctx.Raw.ChannelsGetChannels(ctx, []tg.InputChannelClass{
 		&tg.InputChannel{ChannelID: bareID, AccessHash: 0},
 	})
@@ -498,16 +498,15 @@ func resolveChannelByUsername(ctx *ext.Context, username string) (tg.InputPeerCl
 }
 
 // extractChannelPeer finds the matching channel in a ChannelsGetChannels response.
-// Uses the concrete types *tg.MessagesChats and *tg.MessagesChatsSlice
-// instead of the interface tg.ChatsChatsClass (which may not exist in this version).
-func extractChannelPeer(resolved tg.ChannelsChannelsClass, bareID int64) (tg.InputPeerClass, error) {
+// In gotd/td v0.132.0, ChannelsGetChannels returns MessagesChatsClass.
+func extractChannelPeer(resolved tg.MessagesChatsClass, bareID int64) (tg.InputPeerClass, error) {
 	var chats []tg.ChatClass
 
 	switch r := resolved.(type) {
-	case *tg.ChannelsChannels:
+	case *tg.MessagesChats:
 		chats = r.GetChats()
-	case *tg.ChannelsChannelsNotModified:
-		return nil, fmt.Errorf("channels not modified response for channel ID %d", bareID)
+	case *tg.MessagesChatsSlice:
+		chats = r.GetChats()
 	default:
 		return nil, fmt.Errorf("unexpected type from ChannelsGetChannels: %T", resolved)
 	}
