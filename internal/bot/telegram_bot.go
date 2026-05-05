@@ -37,13 +37,6 @@ const (
 	callbackListUsers      = "cb_listusers"
 	callbackUserAuthAction = "cb_user_auth_action"
 	workerAccessURL        = "https://file.streamgramm.workers.dev"
-	
-	// Telegram CDN DC Endpoints
-	telegramDC1 = "https://cdn1.telegram-cdn.org/file/"
-	telegramDC2 = "https://cdn2.telegram-cdn.org/file/"
-	telegramDC3 = "https://cdn3.telegram-cdn.org/file/"
-	telegramDC4 = "https://cdn4.telegram-cdn.org/file/"
-	telegramDC5 = "https://cdn5.telegram-cdn.org/file/"
 )
 
 // ================================================================
@@ -108,17 +101,16 @@ func (wp *WorkerPublisher) push(chatID int64, payload map[string]interface{}) er
 }
 
 // ================================================================
-// TelegramCDNInfo - Información completa para acceso directo al CDN
+// TelegramCDNInfo - Información para acceso directo al CDN
 // ================================================================
 type TelegramCDNInfo struct {
-	DCID        int    `json:"dc_id"`
-	VolumeID    int64  `json:"volume_id"`
-	LocalID     int64  `json:"local_id"`
-	AccessHash  int64  `json:"access_hash"`
-	FileSize    int64  `json:"file_size"`
-	MimeType    string `json:"mime_type"`
-	FileName    string `json:"file_name"`
-	PartSize    int    `json:"part_size"`
+	DCID       int    `json:"dc_id"`
+	DocumentID int64  `json:"document_id"`
+	AccessHash int64  `json:"access_hash"`
+	FileSize   int64  `json:"file_size"`
+	MimeType   string `json:"mime_type"`
+	FileName   string `json:"file_name"`
+	PartSize   int    `json:"part_size"`
 }
 
 // ================================================================
@@ -212,12 +204,9 @@ func (b *TelegramBot) isWorkerMode() bool {
 
 // ================================================================
 // extractTelegramCDNInfo - EXTRAE INFORMACIÓN MTProto DIRECTA
-// Esto evita el límite de 20MB de la Bot API
+// Corregido para tipos correctos de gotd/td/tg
 // ================================================================
 func (b *TelegramBot) extractTelegramCDNInfo(media tg.MessageMediaClass) (*TelegramCDNInfo, error) {
-	var document *tg.Document
-	var dcID int
-
 	switch m := media.(type) {
 	case *tg.MessageMediaDocument:
 		if m.Document == nil {
@@ -227,8 +216,45 @@ func (b *TelegramBot) extractTelegramCDNInfo(media tg.MessageMediaClass) (*Teleg
 		if !ok {
 			return nil, fmt.Errorf("invalid document type")
 		}
-		document = doc
-		dcID = doc.DCID
+
+		var fileName string
+		var mimeType string
+
+		for _, attr := range doc.Attributes {
+			switch a := attr.(type) {
+			case *tg.DocumentAttributeFilename:
+				fileName = a.FileName
+			case *tg.DocumentAttributeVideo:
+				mimeType = "video/mp4"
+			case *tg.DocumentAttributeAudio:
+				if a.Voice {
+					mimeType = "audio/ogg"
+				} else {
+					mimeType = "audio/mpeg"
+				}
+			}
+		}
+
+		if fileName == "" {
+			fileName = "document"
+		}
+		if mimeType == "" {
+			mimeType = doc.MimeType
+			if mimeType == "" {
+				mimeType = "application/octet-stream"
+			}
+		}
+
+		return &TelegramCDNInfo{
+			DCID:       doc.DCID,
+			DocumentID: doc.ID,
+			AccessHash: doc.AccessHash,
+			FileSize:   doc.Size,
+			MimeType:   mimeType,
+			FileName:   fileName,
+			PartSize:   512 * 1024,
+		}, nil
+
 	case *tg.MessageMediaPhoto:
 		if m.Photo == nil {
 			return nil, fmt.Errorf("photo is nil")
@@ -237,106 +263,42 @@ func (b *TelegramBot) extractTelegramCDNInfo(media tg.MessageMediaClass) (*Teleg
 		if !ok {
 			return nil, fmt.Errorf("invalid photo type")
 		}
+
 		// Para fotos, usar la versión más grande
-		var largestSize *tg.PhotoSize
-		maxSize := int64(0)
+		var maxSize int64 = 0
 		for _, size := range photo.Sizes {
 			if s, ok := size.(*tg.PhotoSize); ok {
-				if s.Size > maxSize {
-					maxSize = s.Size
-					largestSize = s
+				sizeVal := int64(s.Size)
+				if sizeVal > maxSize {
+					maxSize = sizeVal
 				}
 			}
 		}
-		if largestSize == nil {
-			return nil, fmt.Errorf("no photo size found")
-		}
+
 		return &TelegramCDNInfo{
 			DCID:       photo.DCID,
-			VolumeID:   photo.ID.VolumeID,
-			LocalID:    photo.ID.LocalID,
+			DocumentID: photo.ID,
 			AccessHash: photo.AccessHash,
 			FileSize:   maxSize,
 			MimeType:   "image/jpeg",
 			FileName:   "photo.jpg",
 			PartSize:   512 * 1024,
 		}, nil
+
 	case *tg.MessageMediaWebPage:
 		return nil, fmt.Errorf("webpage media not supported for direct CDN")
+
 	default:
 		return nil, fmt.Errorf("unsupported media type: %T", media)
 	}
-
-	// Extraer información del documento
-	var fileSize int64
-	var mimeType string
-	var fileName string
-
-	for _, attr := range document.Attributes {
-		switch a := attr.(type) {
-		case *tg.DocumentAttributeFilename:
-			fileName = a.FileName
-		case *tg.DocumentAttributeVideo:
-			mimeType = "video/mp4"
-		case *tg.DocumentAttributeAudio:
-			if a.Voice {
-				mimeType = "audio/ogg"
-			} else {
-				mimeType = "audio/mpeg"
-			}
-		}
-	}
-
-	if fileName == "" {
-		fileName = "document"
-	}
-	if mimeType == "" {
-		mimeType = document.MimeType
-		if mimeType == "" {
-			mimeType = "application/octet-stream"
-		}
-	}
-
-	fileSize = document.Size
-
-	// Obtener información de ubicación del archivo
-	var volumeID, localID, accessHash int64
-	switch loc := document.Location.(type) {
-	case *tg.InputDocumentFileLocation:
-		volumeID = loc.VolumeID
-		localID = loc.LocalID
-		accessHash = loc.AccessHash
-	case *tg.InputPhotoFileLocation:
-		volumeID = loc.VolumeID
-		localID = loc.LocalID
-		accessHash = loc.AccessHash
-	default:
-		return nil, fmt.Errorf("unsupported file location type: %T", document.Location)
-	}
-
-	return &TelegramCDNInfo{
-		DCID:       dcID,
-		VolumeID:   volumeID,
-		LocalID:    localID,
-		AccessHash: accessHash,
-		FileSize:   fileSize,
-		MimeType:   mimeType,
-		FileName:   fileName,
-		PartSize:   512 * 1024, // 512KB chunks
-	}, nil
 }
 
 // ================================================================
 // buildTelegramCDNURL - Construye URL directa del CDN de Telegram
-// SIN usar Bot API (sin límite de 20MB)
 // ================================================================
 func (b *TelegramBot) buildTelegramCDNURL(info *TelegramCDNInfo) string {
-	// Codificar información en formato base64 URL-safe
-	// El Worker decodificará esto para construir la solicitud MTProto
-	data := fmt.Sprintf("%d:%d:%d:%d", info.DCID, info.VolumeID, info.LocalID, info.AccessHash)
+	data := fmt.Sprintf("%d:%d:%d", info.DCID, info.DocumentID, info.AccessHash)
 	encoded := base64.URLEncoding.EncodeToString([]byte(data))
-	
-	// URL que el Worker usará para proxy
 	return fmt.Sprintf("tgcdn://%s", encoded)
 }
 
@@ -513,13 +475,11 @@ func (b *TelegramBot) publishMediaToPlayer(chatID int64, wsMsg map[string]string
 // ================================================================
 func (b *TelegramBot) generateFileURL(messageID int, file *types.DocumentFile, cdnInfo *TelegramCDNInfo) string {
 	if b.isWorkerMode() {
-		// En modo Worker, usamos el file_id de MTProto
 		fileIdStr := strconv.FormatInt(file.ID, 10)
 		hash := generateHMACHash(fileIdStr, b.config.HashSecret, 16)
 		return fmt.Sprintf("%s/stream/%s/%s", b.config.WorkerBaseURL, fileIdStr, hash)
 	}
-	
-	// Modo local
+
 	hash := utils.GetShortHash(utils.PackFile(
 		file.FileName, file.FileSize, file.MimeType, file.ID,
 	), b.config.HashLength)
@@ -547,14 +507,12 @@ func (b *TelegramBot) constructWebSocketMessage(
 		"isAnimation": strconv.FormatBool(file.IsAnimation),
 	}
 
-	// Información CRÍTICA para que el Worker acceda directamente al CDN
 	if cdnInfo != nil {
 		msg["dcId"] = strconv.Itoa(cdnInfo.DCID)
-		msg["volumeId"] = strconv.FormatInt(cdnInfo.VolumeID, 10)
-		msg["localId"] = strconv.FormatInt(cdnInfo.LocalID, 10)
+		msg["documentId"] = strconv.FormatInt(cdnInfo.DocumentID, 10)
 		msg["accessHash"] = strconv.FormatInt(cdnInfo.AccessHash, 10)
 		msg["partSize"] = strconv.Itoa(cdnInfo.PartSize)
-		msg["useMTProto"] = "true" // Indica al Worker que use MTProto directo
+		msg["useMTProto"] = "true"
 	}
 
 	return msg
@@ -790,9 +748,6 @@ func (b *TelegramBot) handleMediaMessages(ctx *ext.Context, u *ext.Update) error
 		go b.forwardToLogChannel(ctx, u, chatID)
 	}
 
-	// ============================================================
-	// EXTRAER INFORMACIÓN MTProto DIRECTA (SIN LÍMITE 20MB)
-	// ============================================================
 	file, err := utils.FileFromMedia(u.EffectiveMessage.Message.Media)
 	if err != nil {
 		if webPageMedia, ok := u.EffectiveMessage.Message.Media.(*tg.MessageMediaWebPage); ok {
@@ -808,22 +763,17 @@ func (b *TelegramBot) handleMediaMessages(ctx *ext.Context, u *ext.Update) error
 		return b.sendReply(ctx, u, fmt.Sprintf("❌ Unsupported media type: %v", err))
 	}
 
-	// ============================================================
-	// OBTENER INFORMACIÓN CDN DE TELEGRAM (MTProto)
-	// ============================================================
 	var cdnInfo *TelegramCDNInfo
 	if b.isWorkerMode() {
 		cdnInfo, err = b.extractTelegramCDNInfo(u.EffectiveMessage.Message.Media)
 		if err != nil {
 			b.logger.Printf("⚠️ Could not extract CDN info for msg %d: %v (will try Bot API fallback)", messageID, err)
-			// Continuar sin CDN info - el Worker intentará otro método
 		} else {
-			b.logger.Printf("✅ Extracted MTProto CDN info for msg %d (DC: %d, Size: %d)", 
+			b.logger.Printf("✅ Extracted MTProto CDN info for msg %d (DC: %d, Size: %d)",
 				messageID, cdnInfo.DCID, cdnInfo.FileSize)
 		}
 	}
 
-	// Generar URL de streaming firmada
 	streamURL := b.generateFileURL(messageID, file, cdnInfo)
 	b.logger.Printf("Generated stream URL for msg %d: %s", messageID, streamURL)
 
@@ -903,7 +853,6 @@ func (b *TelegramBot) sendReply(ctx *ext.Context, u *ext.Update, msg string) err
 	return err
 }
 
-// sendMediaToUser envía mensaje de información de medios con botones
 func (b *TelegramBot) sendMediaToUser(
 	ctx *ext.Context,
 	u *ext.Update,
@@ -918,14 +867,12 @@ func (b *TelegramBot) sendMediaToUser(
 
 	_, err := ctx.Reply(u, ext.ReplyTextString(messageText), &ext.ReplyOpts{
 		Markup: &tg.ReplyInlineMarkup{Rows: shareRows},
-		ParseMode: &tg.MessageEntityTextURL{},
 	})
 	if err != nil {
 		b.logger.Printf("Error sending reply to chat %d: %v", chatID, err)
 		return err
 	}
 
-	// Construir y enviar metadatos al Worker/player
 	wsMsg := b.constructWebSocketMessage(fileURL, file, cdnInfo)
 	b.publishMediaToPlayer(chatID, wsMsg)
 
