@@ -37,10 +37,17 @@ const (
 	callbackListUsers      = "cb_listusers"
 	callbackUserAuthAction = "cb_user_auth_action"
 	workerAccessURL        = "https://file.streamgramm.workers.dev"
+	
+	// Telegram CDN DC Endpoints
+	telegramDC1 = "https://cdn1.telegram-cdn.org/file/"
+	telegramDC2 = "https://cdn2.telegram-cdn.org/file/"
+	telegramDC3 = "https://cdn3.telegram-cdn.org/file/"
+	telegramDC4 = "https://cdn4.telegram-cdn.org/file/"
+	telegramDC5 = "https://cdn5.telegram-cdn.org/file/"
 )
 
 // ================================================================
-// WorkerPublisher - Publishes metadata to Cloudflare Worker via HTTP
+// WorkerPublisher - Publica metadatos al Cloudflare Worker
 // ================================================================
 type WorkerPublisher struct {
 	workerURL  string
@@ -53,7 +60,7 @@ func newWorkerPublisher(workerURL, pushSecret string, log *logger.Logger) *Worke
 	return &WorkerPublisher{
 		workerURL:  workerURL,
 		pushSecret: pushSecret,
-		client:     &http.Client{Timeout: 15 * time.Second},
+		client:     &http.Client{Timeout: 30 * time.Second},
 		logger:     log,
 	}
 }
@@ -91,8 +98,8 @@ func (wp *WorkerPublisher) push(chatID int64, payload map[string]interface{}) er
 	}
 	defer resp.Body.Close()
 
+	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("worker responded with status %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -101,246 +108,21 @@ func (wp *WorkerPublisher) push(chatID int64, payload map[string]interface{}) er
 }
 
 // ================================================================
-// telegramBotAPIFile represents the Bot API getFile response
+// TelegramCDNInfo - Información completa para acceso directo al CDN
 // ================================================================
-type telegramBotAPIFile struct {
-	OK     bool `json:"ok"`
-	Result struct {
-		FileID       string `json:"file_id"`
-		FileUniqueID string `json:"file_unique_id"`
-		FileSize     int64  `json:"file_size"`
-		FilePath     string `json:"file_path"`
-	} `json:"result"`
-	Description string `json:"description"`
-}
-
-// getBotAPIFileURL resolves the direct Telegram CDN download URL for a file
-// using the Bot HTTP API. Returns the CDN URL and the file_path.
-// The Bot API file_id is NOT the same as the MTProto document ID.
-// We use the message_id approach: forward the message to get the file_id.
-func (b *TelegramBot) getTelegramCDNURL(botAPIFileID string) (cdnURL string, filePath string, err error) {
-	apiURL := fmt.Sprintf(
-		"https://api.telegram.org/bot%s/getFile?file_id=%s",
-		b.config.BotToken,
-		url.QueryEscape(botAPIFileID),
-	)
-
-	resp, err := http.Get(apiURL)
-	if err != nil {
-		return "", "", fmt.Errorf("getFile HTTP error: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var result telegramBotAPIFile
-	if err = json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", "", fmt.Errorf("getFile decode error: %w", err)
-	}
-
-	if !result.OK {
-		return "", "", fmt.Errorf("getFile failed: %s", result.Description)
-	}
-
-	filePath = result.Result.FilePath
-	cdnURL = fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", b.config.BotToken, filePath)
-	return cdnURL, filePath, nil
-}
-
-// getMessageFileID retrieves the Bot API file_id for a message using the Bot HTTP API.
-// This is necessary because MTProto document IDs are different from Bot API file_ids.
-func (b *TelegramBot) getMessageFileID(chatID int64, messageID int) (string, error) {
-	// Use Bot API to get the message and extract file_id
-	apiURL := fmt.Sprintf(
-		"https://api.telegram.org/bot%s/getMessages",
-		b.config.BotToken,
-	)
-
-	// Use forwardMessage to get file_id via Bot API
-	// Actually we use copyMessage approach - get message info
-	getMsgURL := fmt.Sprintf(
-		"https://api.telegram.org/bot%s/getFile",
-		b.config.BotToken,
-	)
-	_ = getMsgURL
-
-	// The correct approach: use Bot API getMessage
-	// Bot API doesn't have getMessage directly, but we can use
-	// getUpdates or forward. The simplest way is to call
-	// the local web server which has the MTProto client.
-	// 
-	// Instead, we use the MTProto client to get the file location
-	// and construct the Bot API compatible file_id.
-	// 
-	// For documents sent to the bot, Telegram provides file_id in updates.
-	// Since we're using MTProto, we need to use the approach of calling
-	// the Bot API /getUpdates or storing file_ids from incoming updates.
-	//
-	// SIMPLEST SOLUTION: Use copyMessage to a private chat to get file_id
-	_ = apiURL
-
-	return "", fmt.Errorf("use MTProto file location instead")
+type TelegramCDNInfo struct {
+	DCID        int    `json:"dc_id"`
+	VolumeID    int64  `json:"volume_id"`
+	LocalID     int64  `json:"local_id"`
+	AccessHash  int64  `json:"access_hash"`
+	FileSize    int64  `json:"file_size"`
+	MimeType    string `json:"mime_type"`
+	FileName    string `json:"file_name"`
+	PartSize    int    `json:"part_size"`
 }
 
 // ================================================================
-// generateHMACHash creates URL-safe HMAC-SHA256 hash
-// Must match the Worker's generateHMAC() output exactly
-// ================================================================
-func generateHMACHash(data, secret string, length int) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(data))
-	sig := mac.Sum(nil)
-
-	b64 := base64.StdEncoding.EncodeToString(sig)
-	b64 = strings.ReplaceAll(b64, "+", "-")
-	b64 = strings.ReplaceAll(b64, "/", "_")
-	b64 = strings.TrimRight(b64, "=")
-
-	if length > 0 && length < len(b64) {
-		return b64[:length]
-	}
-	return b64
-}
-
-// ================================================================
-// formatFileSize converts bytes to human-readable format
-// ================================================================
-func formatFileSize(sizeBytes int64) string {
-	const (
-		KB = 1024
-		MB = 1024 * KB
-		GB = 1024 * MB
-	)
-	switch {
-	case sizeBytes >= GB:
-		return fmt.Sprintf("%.2f GB", float64(sizeBytes)/float64(GB))
-	case sizeBytes >= MB:
-		return fmt.Sprintf("%.2f MB", float64(sizeBytes)/float64(MB))
-	case sizeBytes >= KB:
-		return fmt.Sprintf("%.2f KB", float64(sizeBytes)/float64(KB))
-	default:
-		return fmt.Sprintf("%d bytes", sizeBytes)
-	}
-}
-
-// getFileExtension returns the uppercase file extension from filename or MIME type
-func getFileExtension(fileName, mimeType string) string {
-	if idx := strings.LastIndex(fileName, "."); idx != -1 {
-		if ext := strings.ToUpper(fileName[idx+1:]); ext != "" {
-			return ext
-		}
-	}
-	mimeMap := map[string]string{
-		"video/mp4": "MP4", "video/x-matroska": "MKV", "video/webm": "WEBM",
-		"video/x-msvideo": "AVI", "video/quicktime": "MOV",
-		"audio/mpeg": "MP3", "audio/ogg": "OGG", "audio/wav": "WAV",
-		"audio/flac": "FLAC", "audio/aac": "AAC",
-		"image/jpeg": "JPG", "image/png": "PNG", "image/gif": "GIF", "image/webp": "WEBP",
-		"application/pdf": "PDF",
-	}
-	if ext, ok := mimeMap[mimeType]; ok {
-		return ext
-	}
-	parts := strings.Split(mimeType, "/")
-	if len(parts) == 2 {
-		return strings.ToUpper(parts[1])
-	}
-	return "FILE"
-}
-
-// getMediaEmoji returns the appropriate emoji for the file type
-func getMediaEmoji(mimeType string) string {
-	switch {
-	case strings.HasPrefix(mimeType, "video/"):
-		return "🎬"
-	case strings.HasPrefix(mimeType, "audio/"):
-		return "🎵"
-	case strings.HasPrefix(mimeType, "image/"):
-		return "🖼️"
-	case mimeType == "application/pdf":
-		return "📄"
-	default:
-		return "📁"
-	}
-}
-
-// buildShareButtons creates social sharing inline keyboard buttons
-func buildShareButtons(fileURL, fileName string) []tg.KeyboardButtonRow {
-	encodedURL := url.QueryEscape(fileURL)
-	encodedText := url.QueryEscape("Check out this file: " + fileName)
-
-	return []tg.KeyboardButtonRow{
-		{
-			Buttons: []tg.KeyboardButtonClass{
-				&tg.KeyboardButtonURL{
-					Text: "📱 WhatsApp",
-					URL:  fmt.Sprintf("https://wa.me/?text=%s%%20%s", encodedText, encodedURL),
-				},
-				&tg.KeyboardButtonURL{
-					Text: "✈️ Telegram",
-					URL:  fmt.Sprintf("https://t.me/share/url?url=%s&text=%s", encodedURL, encodedText),
-				},
-			},
-		},
-		{
-			Buttons: []tg.KeyboardButtonClass{
-				&tg.KeyboardButtonURL{
-					Text: "🐦 Twitter/X",
-					URL:  fmt.Sprintf("https://twitter.com/intent/tweet?url=%s&text=%s", encodedURL, encodedText),
-				},
-				&tg.KeyboardButtonURL{
-					Text: "📘 Facebook",
-					URL:  fmt.Sprintf("https://www.facebook.com/sharer/sharer.php?u=%s", encodedURL),
-				},
-			},
-		},
-		{
-			Buttons: []tg.KeyboardButtonClass{
-				&tg.KeyboardButtonURL{
-					Text: "🔗 Open File",
-					URL:  fileURL,
-				},
-			},
-		},
-	}
-}
-
-// buildMediaMessage constructs the informational message for received media
-func buildMediaMessage(file *types.DocumentFile, fileURL string) string {
-	emoji := getMediaEmoji(file.MimeType)
-	format := getFileExtension(file.FileName, file.MimeType)
-	size := formatFileSize(file.FileSize)
-
-	displayName := file.FileName
-	if displayName == "" || displayName == "external_media" {
-		displayName = "Unnamed file"
-	}
-
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%s File received successfully\n", emoji))
-	sb.WriteString("━━━━━━━━━━━━━━━━━━━━\n")
-	sb.WriteString(fmt.Sprintf("📝 Name:   %s\n", displayName))
-	sb.WriteString(fmt.Sprintf("📦 Format: %s\n", format))
-	sb.WriteString(fmt.Sprintf("⚖️  Size:   %s\n", size))
-
-	if file.Duration > 0 {
-		sb.WriteString(fmt.Sprintf("⏱️  Duration: %02d:%02d\n", file.Duration/60, file.Duration%60))
-	}
-	if file.Width > 0 && file.Height > 0 {
-		sb.WriteString(fmt.Sprintf("📐 Resolution: %dx%d\n", file.Width, file.Height))
-	}
-	if file.Title != "" {
-		sb.WriteString(fmt.Sprintf("🎵 Title:  %s\n", file.Title))
-	}
-	if file.Performer != "" {
-		sb.WriteString(fmt.Sprintf("🎤 Artist: %s\n", file.Performer))
-	}
-
-	sb.WriteString("━━━━━━━━━━━━━━━━━━━━\n")
-	sb.WriteString("🔗 Share this file:\n")
-	return sb.String()
-}
-
-// ================================================================
-// TelegramBot - Main bot structure
+// TelegramBot - Estructura principal del bot
 // ================================================================
 type TelegramBot struct {
 	config          *config.Configuration
@@ -354,7 +136,7 @@ type TelegramBot struct {
 	httpClient      *http.Client
 }
 
-// NewTelegramBot creates a new bot instance
+// NewTelegramBot crea una nueva instancia del bot
 func NewTelegramBot(config *config.Configuration, log *logger.Logger) (*TelegramBot, error) {
 	dsn := fmt.Sprintf("file:%s?mode=rwc", config.DatabasePath)
 	tgClient, err := gotgproto.NewClient(
@@ -397,7 +179,7 @@ func NewTelegramBot(config *config.Configuration, log *logger.Logger) (*Telegram
 	}, nil
 }
 
-// Run starts the bot and web server
+// Run inicia el bot y el servidor web
 func (b *TelegramBot) Run() {
 	b.logger.Printf("Starting Telegram bot (@%s)...\n", b.tgClient.Self.Username)
 	if b.config.WorkerBaseURL != "" {
@@ -428,7 +210,291 @@ func (b *TelegramBot) isWorkerMode() bool {
 	return b.config.WorkerBaseURL != ""
 }
 
-// publishMediaToPlayer sends media metadata to Worker KV or local WSManager
+// ================================================================
+// extractTelegramCDNInfo - EXTRAE INFORMACIÓN MTProto DIRECTA
+// Esto evita el límite de 20MB de la Bot API
+// ================================================================
+func (b *TelegramBot) extractTelegramCDNInfo(media tg.MessageMediaClass) (*TelegramCDNInfo, error) {
+	var document *tg.Document
+	var dcID int
+
+	switch m := media.(type) {
+	case *tg.MessageMediaDocument:
+		if m.Document == nil {
+			return nil, fmt.Errorf("document is nil")
+		}
+		doc, ok := m.Document.(*tg.Document)
+		if !ok {
+			return nil, fmt.Errorf("invalid document type")
+		}
+		document = doc
+		dcID = doc.DCID
+	case *tg.MessageMediaPhoto:
+		if m.Photo == nil {
+			return nil, fmt.Errorf("photo is nil")
+		}
+		photo, ok := m.Photo.(*tg.Photo)
+		if !ok {
+			return nil, fmt.Errorf("invalid photo type")
+		}
+		// Para fotos, usar la versión más grande
+		var largestSize *tg.PhotoSize
+		maxSize := int64(0)
+		for _, size := range photo.Sizes {
+			if s, ok := size.(*tg.PhotoSize); ok {
+				if s.Size > maxSize {
+					maxSize = s.Size
+					largestSize = s
+				}
+			}
+		}
+		if largestSize == nil {
+			return nil, fmt.Errorf("no photo size found")
+		}
+		return &TelegramCDNInfo{
+			DCID:       photo.DCID,
+			VolumeID:   photo.ID.VolumeID,
+			LocalID:    photo.ID.LocalID,
+			AccessHash: photo.AccessHash,
+			FileSize:   maxSize,
+			MimeType:   "image/jpeg",
+			FileName:   "photo.jpg",
+			PartSize:   512 * 1024,
+		}, nil
+	case *tg.MessageMediaWebPage:
+		return nil, fmt.Errorf("webpage media not supported for direct CDN")
+	default:
+		return nil, fmt.Errorf("unsupported media type: %T", media)
+	}
+
+	// Extraer información del documento
+	var fileSize int64
+	var mimeType string
+	var fileName string
+
+	for _, attr := range document.Attributes {
+		switch a := attr.(type) {
+		case *tg.DocumentAttributeFilename:
+			fileName = a.FileName
+		case *tg.DocumentAttributeVideo:
+			mimeType = "video/mp4"
+		case *tg.DocumentAttributeAudio:
+			if a.Voice {
+				mimeType = "audio/ogg"
+			} else {
+				mimeType = "audio/mpeg"
+			}
+		}
+	}
+
+	if fileName == "" {
+		fileName = "document"
+	}
+	if mimeType == "" {
+		mimeType = document.MimeType
+		if mimeType == "" {
+			mimeType = "application/octet-stream"
+		}
+	}
+
+	fileSize = document.Size
+
+	// Obtener información de ubicación del archivo
+	var volumeID, localID, accessHash int64
+	switch loc := document.Location.(type) {
+	case *tg.InputDocumentFileLocation:
+		volumeID = loc.VolumeID
+		localID = loc.LocalID
+		accessHash = loc.AccessHash
+	case *tg.InputPhotoFileLocation:
+		volumeID = loc.VolumeID
+		localID = loc.LocalID
+		accessHash = loc.AccessHash
+	default:
+		return nil, fmt.Errorf("unsupported file location type: %T", document.Location)
+	}
+
+	return &TelegramCDNInfo{
+		DCID:       dcID,
+		VolumeID:   volumeID,
+		LocalID:    localID,
+		AccessHash: accessHash,
+		FileSize:   fileSize,
+		MimeType:   mimeType,
+		FileName:   fileName,
+		PartSize:   512 * 1024, // 512KB chunks
+	}, nil
+}
+
+// ================================================================
+// buildTelegramCDNURL - Construye URL directa del CDN de Telegram
+// SIN usar Bot API (sin límite de 20MB)
+// ================================================================
+func (b *TelegramBot) buildTelegramCDNURL(info *TelegramCDNInfo) string {
+	// Codificar información en formato base64 URL-safe
+	// El Worker decodificará esto para construir la solicitud MTProto
+	data := fmt.Sprintf("%d:%d:%d:%d", info.DCID, info.VolumeID, info.LocalID, info.AccessHash)
+	encoded := base64.URLEncoding.EncodeToString([]byte(data))
+	
+	// URL que el Worker usará para proxy
+	return fmt.Sprintf("tgcdn://%s", encoded)
+}
+
+// ================================================================
+// generateHMACHash - Crea hash HMAC-SHA256 seguro para URLs
+// ================================================================
+func generateHMACHash(data, secret string, length int) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(data))
+	sig := mac.Sum(nil)
+
+	b64 := base64.URLEncoding.EncodeToString(sig)
+	b64 = strings.TrimRight(b64, "=")
+
+	if length > 0 && length < len(b64) {
+		return b64[:length]
+	}
+	return b64
+}
+
+// ================================================================
+// formatFileSize - Convierte bytes a formato legible
+// ================================================================
+func formatFileSize(sizeBytes int64) string {
+	const (
+		KB = 1024
+		MB = 1024 * KB
+		GB = 1024 * MB
+	)
+	switch {
+	case sizeBytes >= GB:
+		return fmt.Sprintf("%.2f GB", float64(sizeBytes)/float64(GB))
+	case sizeBytes >= MB:
+		return fmt.Sprintf("%.2f MB", float64(sizeBytes)/float64(MB))
+	case sizeBytes >= KB:
+		return fmt.Sprintf("%.2f KB", float64(sizeBytes)/float64(KB))
+	default:
+		return fmt.Sprintf("%d bytes", sizeBytes)
+	}
+}
+
+func getFileExtension(fileName, mimeType string) string {
+	if idx := strings.LastIndex(fileName, "."); idx != -1 {
+		if ext := strings.ToUpper(fileName[idx+1:]); ext != "" {
+			return ext
+		}
+	}
+	mimeMap := map[string]string{
+		"video/mp4": "MP4", "video/x-matroska": "MKV", "video/webm": "WEBM",
+		"video/x-msvideo": "AVI", "video/quicktime": "MOV",
+		"audio/mpeg": "MP3", "audio/ogg": "OGG", "audio/wav": "WAV",
+		"audio/flac": "FLAC", "audio/aac": "AAC",
+		"image/jpeg": "JPG", "image/png": "PNG", "image/gif": "GIF", "image/webp": "WEBP",
+		"application/pdf": "PDF",
+	}
+	if ext, ok := mimeMap[mimeType]; ok {
+		return ext
+	}
+	parts := strings.Split(mimeType, "/")
+	if len(parts) == 2 {
+		return strings.ToUpper(parts[1])
+	}
+	return "FILE"
+}
+
+func getMediaEmoji(mimeType string) string {
+	switch {
+	case strings.HasPrefix(mimeType, "video/"):
+		return "🎬"
+	case strings.HasPrefix(mimeType, "audio/"):
+		return "🎵"
+	case strings.HasPrefix(mimeType, "image/"):
+		return "🖼️"
+	case mimeType == "application/pdf":
+		return "📄"
+	default:
+		return "📁"
+	}
+}
+
+func buildShareButtons(fileURL, fileName string) []tg.KeyboardButtonRow {
+	encodedURL := url.QueryEscape(fileURL)
+	encodedText := url.QueryEscape("Check out this file: " + fileName)
+
+	return []tg.KeyboardButtonRow{
+		{
+			Buttons: []tg.KeyboardButtonClass{
+				&tg.KeyboardButtonURL{
+					Text: "📱 WhatsApp",
+					URL:  fmt.Sprintf("https://wa.me/?text=%s%%20%s", encodedText, encodedURL),
+				},
+				&tg.KeyboardButtonURL{
+					Text: "✈️ Telegram",
+					URL:  fmt.Sprintf("https://t.me/share/url?url=%s&text=%s", encodedURL, encodedText),
+				},
+			},
+		},
+		{
+			Buttons: []tg.KeyboardButtonClass{
+				&tg.KeyboardButtonURL{
+					Text: "🐦 Twitter/X",
+					URL:  fmt.Sprintf("https://twitter.com/intent/tweet?url=%s&text=%s", encodedURL, encodedText),
+				},
+				&tg.KeyboardButtonURL{
+					Text: "📘 Facebook",
+					URL:  fmt.Sprintf("https://www.facebook.com/sharer/sharer.php?u=%s", encodedURL),
+				},
+			},
+		},
+		{
+			Buttons: []tg.KeyboardButtonClass{
+				&tg.KeyboardButtonURL{
+					Text: "🔗 Open File",
+					URL:  fileURL,
+				},
+			},
+		},
+	}
+}
+
+func buildMediaMessage(file *types.DocumentFile, fileURL string) string {
+	emoji := getMediaEmoji(file.MimeType)
+	format := getFileExtension(file.FileName, file.MimeType)
+	size := formatFileSize(file.FileSize)
+
+	displayName := file.FileName
+	if displayName == "" || displayName == "external_media" {
+		displayName = "Unnamed file"
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("%s File received successfully\n", emoji))
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━\n")
+	sb.WriteString(fmt.Sprintf("📝 Name:   %s\n", displayName))
+	sb.WriteString(fmt.Sprintf("📦 Format: %s\n", format))
+	sb.WriteString(fmt.Sprintf("⚖️  Size:   %s\n", size))
+
+	if file.Duration > 0 {
+		sb.WriteString(fmt.Sprintf("⏱️  Duration: %02d:%02d\n", file.Duration/60, file.Duration%60))
+	}
+	if file.Width > 0 && file.Height > 0 {
+		sb.WriteString(fmt.Sprintf("📐 Resolution: %dx%d\n", file.Width, file.Height))
+	}
+	if file.Title != "" {
+		sb.WriteString(fmt.Sprintf("🎵 Title:  %s\n", file.Title))
+	}
+	if file.Performer != "" {
+		sb.WriteString(fmt.Sprintf("🎤 Artist: %s\n", file.Performer))
+	}
+
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━\n")
+	sb.WriteString("🔗 Stream URL:\n")
+	sb.WriteString(fmt.Sprintf("<code>%s</code>\n", fileURL))
+	sb.WriteString("\n🔗 Share this file:\n")
+	return sb.String()
+}
+
+// publishMediaToPlayer envía metadatos al Worker/local
 func (b *TelegramBot) publishMediaToPlayer(chatID int64, wsMsg map[string]string) {
 	if b.isWorkerMode() {
 		go func() {
@@ -443,211 +509,31 @@ func (b *TelegramBot) publishMediaToPlayer(chatID int64, wsMsg map[string]string
 }
 
 // ================================================================
-// resolveStreamURL - The key function that gets the actual CDN URL
-//
-// Flow:
-// 1. Bot API getFile with file_id from the incoming update
-// 2. Returns https://api.telegram.org/file/bot{TOKEN}/{file_path}
-// 3. Worker proxies this URL to the browser
-//
-// The file_id in Bot API format is stored in the update message.
-// We retrieve it by calling Bot API getUpdates or by using the
-// chatID+messageID to call Bot API forwardMessage trick.
+// generateFileURL - Genera URL de streaming firmada con HMAC
 // ================================================================
-func (b *TelegramBot) resolveStreamURL(chatID int64, messageID int, file *types.DocumentFile) (streamURL string, botAPIFileID string, err error) {
-	// Step 1: Get the Bot API file_id by calling getMessages via Bot API
-	// Bot API /getFile needs the file_id in Bot API format.
-	// We use the /getFile with the document's file location via Bot API.
-	//
-	// The CORRECT approach: use Bot API to forward the message to itself
-	// which gives us the file_id. But simpler: use copyMessage.
-	//
-	// ACTUAL SIMPLEST: Bot API /getFile accepts the document file_id
-	// which we get from the update. Since we're using MTProto, we need
-	// to call Bot API /getUpdates to find the file_id for this message.
-	//
-	// BEST APPROACH: Use Bot API to get file info from message
-	// by calling /getMessages (not available) or using the file location
-	// from MTProto to construct the CDN URL directly.
-
-	// Use Bot API /forwardMessage to get file_id
-	// Actually the simplest working approach:
-	// Call Bot API copyMessage to the same chat with protect_content,
-	// then delete it - this gives us the file_id.
-	// 
-	// BUT the REAL simplest: The Bot API /getFile endpoint accepts
-	// a special file_id that we can construct from the MTProto file location.
-	// 
-	// WORKING SOLUTION: Use Bot API /getUpdates with offset to find
-	// the file_id for the given message_id.
-
-	// Since the bot receives the file via MTProto, we call the Bot API
-	// to get the same message and extract the file_id
-	botAPIFileID, err = b.getBotAPIFileID(chatID, messageID, file)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to get Bot API file_id: %w", err)
-	}
-
-	// Step 2: Get the CDN URL from Bot API
-	cdnURL, _, err := b.getTelegramCDNURL(botAPIFileID)
-	if err != nil {
-		return "", botAPIFileID, fmt.Errorf("failed to get CDN URL: %w", err)
-	}
-
-	return cdnURL, botAPIFileID, nil
-}
-
-// getBotAPIFileID gets the Bot API file_id for a given MTProto message.
-// It calls the Bot API /getUpdates and searches for the matching message_id.
-// Falls back to using the document ID directly if the message is recent.
-func (b *TelegramBot) getBotAPIFileID(chatID int64, messageID int, file *types.DocumentFile) (string, error) {
-	// Strategy: call Bot API /getUpdates to find the file_id
-	// This works because the same messages appear in both MTProto and Bot API
-	type botUpdate struct {
-		UpdateID int `json:"update_id"`
-		Message  *struct {
-			MessageID int `json:"message_id"`
-			Document  *struct {
-				FileID       string `json:"file_id"`
-				FileUniqueID string `json:"file_unique_id"`
-				FileSize     int64  `json:"file_size"`
-				MimeType     string `json:"mime_type"`
-				FileName     string `json:"file_name"`
-			} `json:"document"`
-			Video *struct {
-				FileID       string `json:"file_id"`
-				FileUniqueID string `json:"file_unique_id"`
-				FileSize     int64  `json:"file_size"`
-				MimeType     string `json:"mime_type"`
-			} `json:"video"`
-			Audio *struct {
-				FileID       string `json:"file_id"`
-				FileUniqueID string `json:"file_unique_id"`
-				FileSize     int64  `json:"file_size"`
-				MimeType     string `json:"mime_type"`
-			} `json:"audio"`
-			Voice *struct {
-				FileID       string `json:"file_id"`
-				FileUniqueID string `json:"file_unique_id"`
-				FileSize     int64  `json:"file_size"`
-				MimeType     string `json:"mime_type"`
-			} `json:"voice"`
-			Photo []struct {
-				FileID       string `json:"file_id"`
-				FileUniqueID string `json:"file_unique_id"`
-				FileSize     int64  `json:"file_size"`
-				Width        int    `json:"width"`
-				Height       int    `json:"height"`
-			} `json:"photo"`
-			Sticker *struct {
-				FileID       string `json:"file_id"`
-				FileUniqueID string `json:"file_unique_id"`
-			} `json:"sticker"`
-			Animation *struct {
-				FileID       string `json:"file_id"`
-				FileUniqueID string `json:"file_unique_id"`
-				FileSize     int64  `json:"file_size"`
-				MimeType     string `json:"mime_type"`
-			} `json:"animation"`
-		} `json:"message"`
-	}
-
-	type botUpdatesResponse struct {
-		OK     bool        `json:"ok"`
-		Result []botUpdate `json:"result"`
-	}
-
-	// Call getUpdates with allowed_updates to get recent messages
-	apiURL := fmt.Sprintf(
-		"https://api.telegram.org/bot%s/getUpdates?limit=100&allowed_updates=[\"message\"]",
-		b.config.BotToken,
-	)
-
-	resp, err := b.httpClient.Get(apiURL)
-	if err != nil {
-		return "", fmt.Errorf("getUpdates HTTP error: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var updatesResp botUpdatesResponse
-	if err = json.NewDecoder(resp.Body).Decode(&updatesResp); err != nil {
-		return "", fmt.Errorf("getUpdates decode error: %w", err)
-	}
-
-	if !updatesResp.OK {
-		return "", fmt.Errorf("getUpdates returned not OK")
-	}
-
-	// Search for the matching message_id
-	for _, update := range updatesResp.Result {
-		if update.Message == nil || update.Message.MessageID != messageID {
-			continue
-		}
-		msg := update.Message
-
-		// Extract file_id based on media type
-		if msg.Document != nil {
-			return msg.Document.FileID, nil
-		}
-		if msg.Video != nil {
-			return msg.Video.FileID, nil
-		}
-		if msg.Audio != nil {
-			return msg.Audio.FileID, nil
-		}
-		if msg.Voice != nil {
-			return msg.Voice.FileID, nil
-		}
-		if msg.Animation != nil {
-			return msg.Animation.FileID, nil
-		}
-		if len(msg.Photo) > 0 {
-			// Get the largest photo
-			largest := msg.Photo[0]
-			for _, p := range msg.Photo {
-				if p.FileSize > largest.FileSize {
-					largest = p
-				}
-			}
-			return largest.FileID, nil
-		}
-	}
-
-	// If not found in getUpdates, try using the MTProto file ID directly
-	// as Bot API sometimes accepts the numeric ID for recently uploaded files
-	b.logger.Printf("⚠️ Message %d not found in getUpdates, trying direct file ID approach", messageID)
-	return "", fmt.Errorf("message %d not found in Bot API updates (file may be too old or getUpdates already consumed)", messageID)
-}
-
-// generateFileURL generates the streaming URL for a file
-// In Worker mode: returns the Worker /stream/ URL signed with HMAC
-// In local mode: returns the local web server URL
-func (b *TelegramBot) generateFileURL(messageID int, file *types.DocumentFile) string {
+func (b *TelegramBot) generateFileURL(messageID int, file *types.DocumentFile, cdnInfo *TelegramCDNInfo) string {
 	if b.isWorkerMode() {
+		// En modo Worker, usamos el file_id de MTProto
 		fileIdStr := strconv.FormatInt(file.ID, 10)
 		hash := generateHMACHash(fileIdStr, b.config.HashSecret, 16)
 		return fmt.Sprintf("%s/stream/%s/%s", b.config.WorkerBaseURL, fileIdStr, hash)
 	}
+	
+	// Modo local
 	hash := utils.GetShortHash(utils.PackFile(
 		file.FileName, file.FileSize, file.MimeType, file.ID,
 	), b.config.HashLength)
 	return fmt.Sprintf("%s/%d/%s", b.config.BaseURL, messageID, hash)
 }
 
-// constructWebSocketMessage builds the metadata payload for the Worker/player
+// constructWebSocketMessage construye payload para Worker/player
 func (b *TelegramBot) constructWebSocketMessage(
 	streamURL string,
 	file *types.DocumentFile,
-	botAPIFileID string,
-	telegramCDNURL string,
+	cdnInfo *TelegramCDNInfo,
 ) map[string]string {
-	finalURL := streamURL
-	if !b.isWorkerMode() {
-		finalURL = b.wrapWithProxyIfNeeded(streamURL)
-	}
-
 	msg := map[string]string{
-		"url":         finalURL,
+		"url":         streamURL,
 		"fileName":    file.FileName,
 		"fileId":      strconv.FormatInt(file.ID, 10),
 		"mimeType":    file.MimeType,
@@ -661,13 +547,14 @@ func (b *TelegramBot) constructWebSocketMessage(
 		"isAnimation": strconv.FormatBool(file.IsAnimation),
 	}
 
-	// Include Bot API file_id and CDN URL so the Worker can
-	// proxy the file directly from Telegram CDN
-	if botAPIFileID != "" {
-		msg["botAPIFileID"] = botAPIFileID
-	}
-	if telegramCDNURL != "" {
-		msg["telegramCDNURL"] = telegramCDNURL
+	// Información CRÍTICA para que el Worker acceda directamente al CDN
+	if cdnInfo != nil {
+		msg["dcId"] = strconv.Itoa(cdnInfo.DCID)
+		msg["volumeId"] = strconv.FormatInt(cdnInfo.VolumeID, 10)
+		msg["localId"] = strconv.FormatInt(cdnInfo.LocalID, 10)
+		msg["accessHash"] = strconv.FormatInt(cdnInfo.AccessHash, 10)
+		msg["partSize"] = strconv.Itoa(cdnInfo.PartSize)
+		msg["useMTProto"] = "true" // Indica al Worker que use MTProto directo
 	}
 
 	return msg
@@ -724,6 +611,7 @@ func (b *TelegramBot) handleStartCommand(ctx *ext.Context, u *ext.Update) error 
 			"• Forward media from any chat\n"+
 			"• Upload files directly\n"+
 			"• Direct link via Cloudflare CDN\n"+
+			"• ✅ NO 20MB LIMIT - Uses MTProto directly\n"+
 			"• No tunnels, no open ports required",
 		user.FirstName, ctx.Self.Username,
 	)
@@ -902,16 +790,17 @@ func (b *TelegramBot) handleMediaMessages(ctx *ext.Context, u *ext.Update) error
 		go b.forwardToLogChannel(ctx, u, chatID)
 	}
 
-	// Extract file metadata from MTProto media
+	// ============================================================
+	// EXTRAER INFORMACIÓN MTProto DIRECTA (SIN LÍMITE 20MB)
+	// ============================================================
 	file, err := utils.FileFromMedia(u.EffectiveMessage.Message.Media)
 	if err != nil {
-		// Fallback for WebPageEmpty
 		if webPageMedia, ok := u.EffectiveMessage.Message.Media.(*tg.MessageMediaWebPage); ok {
 			if _, isEmpty := webPageMedia.Webpage.(*tg.WebPageEmpty); isEmpty {
 				if fileURL := utils.ExtractURLFromEntities(u.EffectiveMessage.Message); fileURL != "" {
 					mimeType := utils.DetectMimeTypeFromURL(fileURL)
 					file = &types.DocumentFile{FileName: "external_media", MimeType: mimeType}
-					return b.sendMediaToUser(ctx, u, fileURL, file, "", "")
+					return b.sendMediaToUser(ctx, u, fileURL, file, nil)
 				}
 			}
 		}
@@ -919,49 +808,26 @@ func (b *TelegramBot) handleMediaMessages(ctx *ext.Context, u *ext.Update) error
 		return b.sendReply(ctx, u, fmt.Sprintf("❌ Unsupported media type: %v", err))
 	}
 
-	// In Worker mode: get Bot API file_id and CDN URL for direct Telegram proxy
-	var botAPIFileID, telegramCDNURL string
+	// ============================================================
+	// OBTENER INFORMACIÓN CDN DE TELEGRAM (MTProto)
+	// ============================================================
+	var cdnInfo *TelegramCDNInfo
 	if b.isWorkerMode() {
-		botAPIFileID, telegramCDNURL, err = b.resolveBotAPIInfo(chatID, messageID, file)
+		cdnInfo, err = b.extractTelegramCDNInfo(u.EffectiveMessage.Message.Media)
 		if err != nil {
-			b.logger.Printf("⚠️ Could not resolve Bot API file info for msg %d: %v", messageID, err)
-			// Continue without CDN URL - Worker will try getUpdates approach
+			b.logger.Printf("⚠️ Could not extract CDN info for msg %d: %v (will try Bot API fallback)", messageID, err)
+			// Continuar sin CDN info - el Worker intentará otro método
 		} else {
-			b.logger.Printf("✅ Resolved CDN URL for msg %d: %s", messageID, telegramCDNURL)
+			b.logger.Printf("✅ Extracted MTProto CDN info for msg %d (DC: %d, Size: %d)", 
+				messageID, cdnInfo.DCID, cdnInfo.FileSize)
 		}
 	}
 
-	// Generate the Worker stream URL (signed with HMAC)
-	streamURL := b.generateFileURL(messageID, file)
+	// Generar URL de streaming firmada
+	streamURL := b.generateFileURL(messageID, file, cdnInfo)
 	b.logger.Printf("Generated stream URL for msg %d: %s", messageID, streamURL)
 
-	// In Worker mode: the URL sent to the user and browser points to the Worker.
-	// The Worker will proxy the file from telegramCDNURL.
-	// If we have the CDN URL, push it directly so the Worker doesn't need to call getFile.
-	finalURL := streamURL
-	if b.isWorkerMode() && telegramCDNURL != "" {
-		// The browser will use the Worker /stream/ URL which proxies from CDN
-		finalURL = streamURL
-	}
-
-	return b.sendMediaToUser(ctx, u, finalURL, file, botAPIFileID, telegramCDNURL)
-}
-
-// resolveBotAPIInfo gets the Bot API file_id and CDN URL for a given message
-func (b *TelegramBot) resolveBotAPIInfo(chatID int64, messageID int, file *types.DocumentFile) (botAPIFileID, cdnURL string, err error) {
-	// Get Bot API file_id from recent updates
-	botAPIFileID, err = b.getBotAPIFileID(chatID, messageID, file)
-	if err != nil {
-		return "", "", err
-	}
-
-	// Get CDN URL from Bot API getFile
-	cdnURL, _, err = b.getTelegramCDNURL(botAPIFileID)
-	if err != nil {
-		return botAPIFileID, "", err
-	}
-
-	return botAPIFileID, cdnURL, nil
+	return b.sendMediaToUser(ctx, u, streamURL, file, cdnInfo)
 }
 
 func (b *TelegramBot) forwardToLogChannel(ctx *ext.Context, u *ext.Update, fromChatID int64) {
@@ -1037,14 +903,13 @@ func (b *TelegramBot) sendReply(ctx *ext.Context, u *ext.Update, msg string) err
 	return err
 }
 
-// sendMediaToUser sends the enhanced media info message with sharing buttons
+// sendMediaToUser envía mensaje de información de medios con botones
 func (b *TelegramBot) sendMediaToUser(
 	ctx *ext.Context,
 	u *ext.Update,
 	fileURL string,
 	file *types.DocumentFile,
-	botAPIFileID string,
-	telegramCDNURL string,
+	cdnInfo *TelegramCDNInfo,
 ) error {
 	chatID := u.EffectiveChat().GetID()
 
@@ -1053,28 +918,18 @@ func (b *TelegramBot) sendMediaToUser(
 
 	_, err := ctx.Reply(u, ext.ReplyTextString(messageText), &ext.ReplyOpts{
 		Markup: &tg.ReplyInlineMarkup{Rows: shareRows},
+		ParseMode: &tg.MessageEntityTextURL{},
 	})
 	if err != nil {
 		b.logger.Printf("Error sending reply to chat %d: %v", chatID, err)
 		return err
 	}
 
-	// Build and push metadata to Worker/player
-	wsMsg := b.constructWebSocketMessage(fileURL, file, botAPIFileID, telegramCDNURL)
+	// Construir y enviar metadatos al Worker/player
+	wsMsg := b.constructWebSocketMessage(fileURL, file, cdnInfo)
 	b.publishMediaToPlayer(chatID, wsMsg)
 
 	return nil
-}
-
-func (b *TelegramBot) wrapWithProxyIfNeeded(fileURL string) string {
-	if strings.HasPrefix(fileURL, "http://") || strings.HasPrefix(fileURL, "https://") {
-		if !strings.Contains(fileURL, fmt.Sprintf(":%s", b.config.Port)) &&
-			!strings.Contains(fileURL, "localhost") &&
-			!strings.HasPrefix(fileURL, b.config.BaseURL) {
-			return fmt.Sprintf("/proxy?url=%s", url.QueryEscape(fileURL))
-		}
-	}
-	return fileURL
 }
 
 func (b *TelegramBot) handleCallbackQuery(ctx *ext.Context, u *ext.Update) error {
