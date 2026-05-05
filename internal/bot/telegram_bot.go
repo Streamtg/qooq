@@ -118,9 +118,6 @@ type telegramBotAPIFile struct {
 }
 
 // getBotAPIFileURL resolves the direct Telegram CDN download URL for a file
-// using the Bot HTTP API. Returns the CDN URL and the file_path.
-// The Bot API file_id is NOT the same as the MTProto document ID.
-// We use the message_id approach: forward the message to get the file_id.
 func (b *TelegramBot) getTelegramCDNURL(botAPIFileID string) (cdnURL string, filePath string, err error) {
 	apiURL := fmt.Sprintf(
 		"https://api.telegram.org/bot%s/getFile?file_id=%s",
@@ -148,44 +145,8 @@ func (b *TelegramBot) getTelegramCDNURL(botAPIFileID string) (cdnURL string, fil
 	return cdnURL, filePath, nil
 }
 
-// getMessageFileID retrieves the Bot API file_id for a message using the Bot HTTP API.
-// This is necessary because MTProto document IDs are different from Bot API file_ids.
-func (b *TelegramBot) getMessageFileID(chatID int64, messageID int) (string, error) {
-	// Use Bot API to get the message and extract file_id
-	apiURL := fmt.Sprintf(
-		"https://api.telegram.org/bot%s/getMessages",
-		b.config.BotToken,
-	)
-
-	// Use forwardMessage to get file_id via Bot API
-	// Actually we use copyMessage approach - get message info
-	getMsgURL := fmt.Sprintf(
-		"https://api.telegram.org/bot%s/getFile",
-		b.config.BotToken,
-	)
-	_ = getMsgURL
-
-	// The correct approach: use Bot API getMessage
-	// Bot API doesn't have getMessage directly, but we can use
-	// getUpdates or forward. The simplest way is to call
-	// the local web server which has the MTProto client.
-	// 
-	// Instead, we use the MTProto client to get the file location
-	// and construct the Bot API compatible file_id.
-	// 
-	// For documents sent to the bot, Telegram provides file_id in updates.
-	// Since we're using MTProto, we need to use the approach of calling
-	// the Bot API /getUpdates or storing file_ids from incoming updates.
-	//
-	// SIMPLEST SOLUTION: Use copyMessage to a private chat to get file_id
-	_ = apiURL
-
-	return "", fmt.Errorf("use MTProto file location instead")
-}
-
 // ================================================================
 // generateHMACHash creates URL-safe HMAC-SHA256 hash
-// Must match the Worker's generateHMAC() output exactly
 // ================================================================
 func generateHMACHash(data, secret string, length int) string {
 	mac := hmac.New(sha256.New, []byte(secret))
@@ -431,67 +392,64 @@ func (b *TelegramBot) isWorkerMode() bool {
 	return b.config.WorkerBaseURL != ""
 }
 
+// convertToInterfaceMap converts map[string]string to map[string]interface{}
+func convertToInterfaceMap(strMap map[string]string) map[string]interface{} {
+	result := make(map[string]interface{})
+	for k, v := range strMap {
+		result[k] = v
+	}
+	return result
+}
+
+// convertToStringMap converts map[string]interface{} to map[string]string
+func convertToStringMap(interfaceMap map[string]interface{}) map[string]string {
+	result := make(map[string]string)
+	for k, v := range interfaceMap {
+		switch val := v.(type) {
+		case string:
+			result[k] = val
+		case int:
+			result[k] = strconv.Itoa(val)
+		case int64:
+			result[k] = strconv.FormatInt(val, 10)
+		case bool:
+			result[k] = strconv.FormatBool(val)
+		case float64:
+			result[k] = strconv.FormatFloat(val, 'f', -1, 64)
+		default:
+			result[k] = fmt.Sprintf("%v", val)
+		}
+	}
+	return result
+}
+
 // publishMediaToPlayer sends media metadata to Worker KV or local WSManager
 func (b *TelegramBot) publishMediaToPlayer(chatID int64, wsMsg map[string]interface{}) {
 	if b.isWorkerMode() {
 		go func() {
 			if err := b.workerPublisher.pushMedia(chatID, wsMsg); err != nil {
 				b.logger.Printf("⚠️ Worker push failed for chat %d: %v (falling back to local)", chatID, err)
-				b.webServer.GetWSManager().PublishMessage(chatID, wsMsg)
+				// Convert to string map for WSManager
+				strMsg := convertToStringMap(wsMsg)
+				b.webServer.GetWSManager().PublishMessage(chatID, strMsg)
 			}
 		}()
 	} else {
-		b.webServer.GetWSManager().PublishMessage(chatID, wsMsg)
+		// Convert to string map for WSManager
+		strMsg := convertToStringMap(wsMsg)
+		b.webServer.GetWSManager().PublishMessage(chatID, strMsg)
 	}
 }
 
 // ================================================================
 // resolveStreamURL - The key function that gets the actual CDN URL
-//
-// Flow:
-// 1. Bot API getFile with file_id from the incoming update
-// 2. Returns https://api.telegram.org/file/bot{TOKEN}/{file_path}
-// 3. Worker proxies this URL to the browser
-//
-// The file_id in Bot API format is stored in the update message.
-// We retrieve it by calling Bot API getUpdates or by using the
-// chatID+messageID to call Bot API forwardMessage trick.
 // ================================================================
 func (b *TelegramBot) resolveStreamURL(chatID int64, messageID int, file *types.DocumentFile) (streamURL string, botAPIFileID string, err error) {
-	// Step 1: Get the Bot API file_id by calling getMessages via Bot API
-	// Bot API /getFile needs the file_id in Bot API format.
-	// We use the /getFile with the document's file location via Bot API.
-	//
-	// The CORRECT approach: use Bot API to forward the message to itself
-	// which gives us the file_id. But simpler: use copyMessage.
-	//
-	// ACTUAL SIMPLEST: Bot API /getFile accepts the document file_id
-	// which we get from the update. Since we're using MTProto, we need
-	// to call Bot API /getUpdates to find the file_id for this message.
-	//
-	// BEST APPROACH: Use Bot API to get file info from message
-	// by calling /getMessages (not available) or using the file location
-	// from MTProto to construct the CDN URL directly.
-
-	// Use Bot API /forwardMessage to get file_id
-	// Actually the simplest working approach:
-	// Call Bot API copyMessage to the same chat with protect_content,
-	// then delete it - this gives us the file_id.
-	// 
-	// BUT the REAL simplest: The Bot API /getFile endpoint accepts
-	// a special file_id that we can construct from the MTProto file location.
-	// 
-	// WORKING SOLUTION: Use Bot API /getUpdates with offset to find
-	// the file_id for the given message_id.
-
-	// Since the bot receives the file via MTProto, we call the Bot API
-	// to get the same message and extract the file_id
 	botAPIFileID, err = b.getBotAPIFileID(chatID, messageID, file)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to get Bot API file_id: %w", err)
 	}
 
-	// Step 2: Get the CDN URL from Bot API
 	cdnURL, _, err := b.getTelegramCDNURL(botAPIFileID)
 	if err != nil {
 		return "", botAPIFileID, fmt.Errorf("failed to get CDN URL: %w", err)
@@ -500,12 +458,8 @@ func (b *TelegramBot) resolveStreamURL(chatID int64, messageID int, file *types.
 	return cdnURL, botAPIFileID, nil
 }
 
-// getBotAPIFileID gets the Bot API file_id for a given MTProto message.
-// It calls the Bot API /getUpdates and searches for the matching message_id.
-// Falls back to using the document ID directly if the message is recent.
+// getBotAPIFileID gets the Bot API file_id for a given MTProto message
 func (b *TelegramBot) getBotAPIFileID(chatID int64, messageID int, file *types.DocumentFile) (string, error) {
-	// Strategy: call Bot API /getUpdates to find the file_id
-	// This works because the same messages appear in both MTProto and Bot API
 	type botUpdate struct {
 		UpdateID int `json:"update_id"`
 		Message  *struct {
@@ -560,7 +514,6 @@ func (b *TelegramBot) getBotAPIFileID(chatID int64, messageID int, file *types.D
 		Result []botUpdate `json:"result"`
 	}
 
-	// Call getUpdates with allowed_updates to get recent messages
 	apiURL := fmt.Sprintf(
 		"https://api.telegram.org/bot%s/getUpdates?limit=100&allowed_updates=[\"message\"]",
 		b.config.BotToken,
@@ -581,14 +534,12 @@ func (b *TelegramBot) getBotAPIFileID(chatID int64, messageID int, file *types.D
 		return "", fmt.Errorf("getUpdates returned not OK")
 	}
 
-	// Search for the matching message_id
 	for _, update := range updatesResp.Result {
 		if update.Message == nil || update.Message.MessageID != messageID {
 			continue
 		}
 		msg := update.Message
 
-		// Extract file_id based on media type
 		if msg.Document != nil {
 			return msg.Document.FileID, nil
 		}
@@ -605,7 +556,6 @@ func (b *TelegramBot) getBotAPIFileID(chatID int64, messageID int, file *types.D
 			return msg.Animation.FileID, nil
 		}
 		if len(msg.Photo) > 0 {
-			// Get the largest photo
 			largest := msg.Photo[0]
 			for _, p := range msg.Photo {
 				if p.FileSize > largest.FileSize {
@@ -616,15 +566,11 @@ func (b *TelegramBot) getBotAPIFileID(chatID int64, messageID int, file *types.D
 		}
 	}
 
-	// If not found in getUpdates, try using the MTProto file ID directly
-	// as Bot API sometimes accepts the numeric ID for recently uploaded files
 	b.logger.Printf("⚠️ Message %d not found in getUpdates, trying direct file ID approach", messageID)
-	return "", fmt.Errorf("message %d not found in Bot API updates (file may be too old or getUpdates already consumed)", messageID)
+	return "", fmt.Errorf("message %d not found in Bot API updates", messageID)
 }
 
 // generateFileURL generates the streaming URL for a file
-// In Worker mode: returns the Worker /stream/ URL signed with HMAC
-// In local mode: returns the local web server URL
 func (b *TelegramBot) generateFileURL(messageID int, file *types.DocumentFile) string {
 	if b.isWorkerMode() {
 		fileIdStr := strconv.FormatInt(file.ID, 10)
@@ -664,8 +610,6 @@ func (b *TelegramBot) constructWebSocketMessage(
 		"isAnimation": file.IsAnimation,
 	}
 
-	// Include Bot API file_id and CDN URL so the Worker can
-	// proxy the file directly from Telegram CDN
 	if botAPIFileID != "" {
 		msg["botAPIFileID"] = botAPIFileID
 	}
@@ -905,10 +849,8 @@ func (b *TelegramBot) handleMediaMessages(ctx *ext.Context, u *ext.Update) error
 		go b.forwardToLogChannel(ctx, u, chatID)
 	}
 
-	// Extract file metadata from MTProto media
 	file, err := utils.FileFromMedia(u.EffectiveMessage.Message.Media)
 	if err != nil {
-		// Fallback for WebPageEmpty
 		if webPageMedia, ok := u.EffectiveMessage.Message.Media.(*tg.MessageMediaWebPage); ok {
 			if _, isEmpty := webPageMedia.Webpage.(*tg.WebPageEmpty); isEmpty {
 				if fileURL := utils.ExtractURLFromEntities(u.EffectiveMessage.Message); fileURL != "" {
@@ -922,43 +864,33 @@ func (b *TelegramBot) handleMediaMessages(ctx *ext.Context, u *ext.Update) error
 		return b.sendReply(ctx, u, fmt.Sprintf("❌ Unsupported media type: %v", err))
 	}
 
-	// In Worker mode: get Bot API file_id and CDN URL for direct Telegram proxy
 	var botAPIFileID, telegramCDNURL string
 	if b.isWorkerMode() {
 		botAPIFileID, telegramCDNURL, err = b.resolveBotAPIInfo(chatID, messageID, file)
 		if err != nil {
 			b.logger.Printf("⚠️ Could not resolve Bot API file info for msg %d: %v", messageID, err)
-			// Continue without CDN URL - Worker will try getUpdates approach
 		} else {
 			b.logger.Printf("✅ Resolved CDN URL for msg %d: %s", messageID, telegramCDNURL)
 		}
 	}
 
-	// Generate the Worker stream URL (signed with HMAC)
 	streamURL := b.generateFileURL(messageID, file)
 	b.logger.Printf("Generated stream URL for msg %d: %s", messageID, streamURL)
 
-	// In Worker mode: the URL sent to the user and browser points to the Worker.
-	// The Worker will proxy the file from telegramCDNURL.
-	// If we have the CDN URL, push it directly so the Worker doesn't need to call getFile.
 	finalURL := streamURL
 	if b.isWorkerMode() && telegramCDNURL != "" {
-		// The browser will use the Worker /stream/ URL which proxies from CDN
 		finalURL = streamURL
 	}
 
 	return b.sendMediaToUser(ctx, u, finalURL, file, botAPIFileID, telegramCDNURL)
 }
 
-// resolveBotAPIInfo gets the Bot API file_id and CDN URL for a given message
 func (b *TelegramBot) resolveBotAPIInfo(chatID int64, messageID int, file *types.DocumentFile) (botAPIFileID, cdnURL string, err error) {
-	// Get Bot API file_id from recent updates
 	botAPIFileID, err = b.getBotAPIFileID(chatID, messageID, file)
 	if err != nil {
 		return "", "", err
 	}
 
-	// Get CDN URL from Bot API getFile
 	cdnURL, _, err = b.getTelegramCDNURL(botAPIFileID)
 	if err != nil {
 		return botAPIFileID, "", err
@@ -1040,7 +972,6 @@ func (b *TelegramBot) sendReply(ctx *ext.Context, u *ext.Update, msg string) err
 	return err
 }
 
-// sendMediaToUser sends the enhanced media info message with sharing buttons
 func (b *TelegramBot) sendMediaToUser(
 	ctx *ext.Context,
 	u *ext.Update,
@@ -1062,7 +993,6 @@ func (b *TelegramBot) sendMediaToUser(
 		return err
 	}
 
-	// Build and push metadata to Worker/player
 	wsMsg := b.constructWebSocketMessage(fileURL, file, botAPIFileID, telegramCDNURL)
 	b.publishMediaToPlayer(chatID, wsMsg)
 
